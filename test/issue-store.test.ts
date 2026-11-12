@@ -82,4 +82,15 @@ describe("Issue Store", () => {
 
     expect(await createIssueStore(repo.dir).next()).toBeNull();
   });
+
+  it.each([
+    ["Model: claude-haiku-5-5", "claude-haiku-5-5"],
+    ["Model: `claude-haiku-5-5`", "claude-haiku-5-5"],
+    ["Model:", undefined],
+    ["", undefined],
+  ])("reads the model from %j", async (line, model) => {
+    repo.write(`${ISSUES}/01-a.md`, issueFile({ title: "01: A", status: "ready-for-agent", extra: line }));
+
+    expect((await createIssueStore(repo.dir).next())?.model).toBe(model);
+  });
 });

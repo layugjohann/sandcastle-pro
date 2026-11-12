@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Agent, AgentCall, AgentResult, Review } from "../src/index.js";
+import { DEFAULT_CONFIG, type Agent, type AgentCall, type AgentResult, type Config, type Review } from "../src/index.js";
 
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -112,4 +112,9 @@ function commitOnBranch(repoDir: string, branch: string, files: Record<string, s
   } finally {
     git(repoDir, "worktree", "remove", "--force", worktree);
   }
+}
+
+/** A project config with the defaults and the given Gate commands. */
+export function withGate(gate: string[]): Config {
+  return { ...DEFAULT_CONFIG, gate };
 }

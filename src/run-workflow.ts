@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { Agent, AgentResult, Effort, Finding, Review } from "./agent.js";
+import type { Agent, AgentResult, Finding, Review } from "./agent.js";
+import { loadConfig, type Config } from "./config.js";
 import { runGate, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore } from "./issue-store.js";
 import { fenced } from "./markdown.js";
@@ -12,24 +13,16 @@ import { buildImplementerPrompt, buildReviewPrompt } from "./prompt.js";
 
 const exec = promisify(execFile);
 
-export const DEFAULTS = {
-  model: "claude-opus-5-5",
-  effort: "medium" as Effort,
-  implementerMaxIterations: 3,
-  reviewMaxIterations: 1,
-  count: 1,
-};
+const DEFAULT_COUNT = 1;
 
 export interface RunOptions {
   repoDir: string;
   agent: Agent;
-  /** Gate commands, run in order in the Issue's branch. */
-  gate: readonly string[];
+  /** The project config. Defaults to the one read from `repoDir`. */
+  config?: Config;
   store?: IssueStore;
   /** Branch the Issue branch starts from. Defaults to the current branch. */
   targetBranch?: string;
-  model?: string;
-  effort?: Effort;
   /** The most Issues this Run processes, one after another. Defaults to 1. */
   count?: number;
   log?: (line: string) => void;
@@ -53,13 +46,14 @@ export interface RunResult {
 export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   const log = options.log ?? ((line: string) => console.log(line));
   const store = options.store ?? createIssueStore(options.repoDir);
-  const count = options.count ?? DEFAULTS.count;
+  const count = options.count ?? DEFAULT_COUNT;
   if (!Number.isInteger(count) || count < 1) {
     throw new Error(`count must be a positive whole number, got ${count}.`);
   }
   const targetBranch = options.targetBranch ?? (await git(options.repoDir, "branch", "--show-current"));
   if (!targetBranch) throw new Error("No target branch: check out a branch, or pass targetBranch.");
-  const context = { ...options, targetBranch, log, store };
+  const config = options.config ?? (await loadConfig(options.repoDir));
+  const context = { ...options, config, targetBranch, log, store };
   await markMergedIssuesDone(context);
 
   const issues: IssueResult[] = [];
@@ -81,7 +75,8 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   return { issues };
 }
 
-type IssueContext = Omit<RunOptions, "count" | "log" | "store" | "targetBranch"> & {
+type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "targetBranch"> & {
+  config: Config;
   targetBranch: string;
   log: (line: string) => void;
   store: IssueStore;
@@ -109,14 +104,15 @@ async function isMerged(repoDir: string, branch: string, target: string): Promis
 }
 
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
-  const { repoDir, agent, log, store, targetBranch: target } = options;
+  const { repoDir, agent, log, store, config, targetBranch: target } = options;
   const { branch } = issue;
   log(`Starting Issue ${issue.id} on ${branch}`);
   await store.transition(issue, "in-progress");
   await ensureBranch(repoDir, branch, target);
 
-  const model = options.model ?? DEFAULTS.model;
-  const effort = options.effort ?? DEFAULTS.effort;
+  const { effort } = config;
+  // An Issue's `Model:` line overrides the configured default for both of its stages.
+  const model = issue.model ?? config.model;
 
   const implemented = await agent.run({
     stage: "implementer",
@@ -124,7 +120,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     model,
     effort,
     branch,
-    maxIterations: DEFAULTS.implementerMaxIterations,
+    maxIterations: config.maxIterations.implementer,
   });
   assertCompleted(implemented, "Implementer");
 
@@ -138,7 +134,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     model,
     effort,
     branch,
-    maxIterations: DEFAULTS.reviewMaxIterations,
+    maxIterations: config.maxIterations.reviewSession,
   });
   assertCompleted(reviewed, "Review Session");
   const { review } = reviewed;
@@ -158,7 +154,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     return { outcome: "spec-disagreement", issue, branch, review };
   }
 
-  const gate = await withWorktree(repoDir, branch, (dir) => runGate(options.gate, dir));
+  const gate = await withWorktree(repoDir, branch, (dir) => runGate(config.gate, dir));
   if (!gate.passed) {
     // The branch is left as it is so the human can take over with full context.
     await store.comment(issue, `**Gate failed**\n\n${fenced(gate.output.trim())}`);

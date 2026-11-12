@@ -1,6 +1,6 @@
 # 10: init scaffolding
 
-Status: ready-for-agent
+Status: done
 Blocked by: 05
 
 Spec: `.scratch/sandcastle-pro/spec.md`

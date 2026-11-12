@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Agent, AgentResult, Finding, Review } from "./agent.js";
+import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore } from "./issue-store.js";
@@ -129,6 +130,8 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
       branch,
       commits: await git(repoDir, "log", "--format=%h %s", `${target}..${branch}`),
       diff: await git(repoDir, "diff", `${target}...${branch}`),
+      // Loaded only here: the Implementer never pays for Coding Standards.
+      standards: await loadCodingStandards(repoDir),
     }),
     model,
     effort,

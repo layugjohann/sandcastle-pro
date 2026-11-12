@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { afterEach, beforeEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,6 +7,31 @@ import { DEFAULT_CONFIG, type Agent, type AgentCall, type AgentResult, type Conf
 
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+/** Writes `content` to `path` under `root`, creating parent directories. */
+export function writeFile(root: string, path: string, content: string): void {
+  const full = join(root, path);
+  mkdirSync(dirname(full), { recursive: true });
+  writeFileSync(full, content);
+}
+
+/**
+ * Points `HOME` at a fresh temp directory around each test, so the Personal
+ * Coding Standards layer never comes from the real user. Call at the top of a test file.
+ */
+export function useTempHome(): { readonly dir: string } {
+  const original = process.env.HOME;
+  const home = { dir: "" };
+  beforeEach(() => {
+    home.dir = mkdtempSync(join(tmpdir(), "sandcastle-pro-home-"));
+    process.env.HOME = home.dir;
+  });
+  afterEach(() => {
+    process.env.HOME = original;
+    rmSync(home.dir, { recursive: true, force: true });
+  });
+  return home;
 }
 
 export interface TempRepo {
@@ -25,11 +51,7 @@ export function createTempRepo(): TempRepo {
   git(dir, "config", "commit.gpgsign", "false");
   const repo: TempRepo = {
     dir,
-    write(path, content) {
-      const full = join(dir, path);
-      mkdirSync(dirname(full), { recursive: true });
-      writeFileSync(full, content);
-    },
+    write: (path, content) => writeFile(dir, path, content),
     read: (path) => readFileSync(join(dir, path), "utf8"),
     commitAll(message) {
       git(dir, "add", "-A");

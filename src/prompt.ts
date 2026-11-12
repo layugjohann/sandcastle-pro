@@ -22,6 +22,8 @@ export interface ReviewContext {
   diff: string;
   /** The Coding Standards layers, highest precedence first. */
   standards: readonly CodingStandardsLayer[];
+  /** The configured Gate commands, in the order the Run Workflow runs them. */
+  gate: readonly string[];
 }
 
 const SEVERITY_DEFINITION = `## Critical vs. Non-critical
@@ -30,7 +32,7 @@ A **Critical Finding** makes the change wrong. It is one of:
 - a correctness bug
 - a contradiction of the Spec or the Issue
 - a security hole
-- a Gate failure (failing tests, typecheck or other configured checks)
+- a Gate failure (a Gate command below fails)
 - data loss
 - a breach of a Must Rule (see Coding Standards)
 
@@ -67,11 +69,26 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
   if (issue.spec) sections.push(`## Spec\n\n${issue.spec.trim()}`);
   sections.push(
     codingStandardsSection(context.standards),
+    gateSection(context.gate),
     `## Commits\n\n${fenced(context.commits.trim() || "(no commits)")}`,
     `## Diff\n\n${fenced(context.diff.trim() || "(empty diff)", "diff")}`,
     OUTPUT_FORMAT,
   );
   return `${sections.join("\n\n")}\n`;
+}
+
+/**
+ * The Gate section: the reviewer runs these only to check its own fixes, because
+ * the Run Workflow runs the Gate itself once the review is done.
+ */
+function gateSection(commands: readonly string[]): string {
+  return `## Gate
+
+The Run Workflow runs the Gate itself after this review, in the Issue's branch, and the change only reaches awaiting-merge if every command passes. The configured Gate commands, run in order:
+
+${commands.map((command) => `- \`${command}\``).join("\n")}
+
+Run them yourself only to check your own fixes before you finish.`;
 }
 
 /**

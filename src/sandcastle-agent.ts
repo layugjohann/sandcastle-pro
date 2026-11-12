@@ -3,9 +3,9 @@
  * Kept thin on purpose. It has no automated tests and is checked by hand with one real Run.
  */
 import { claudeCode, run, type IterationUsage, type SandboxProvider } from "@ai-hero/sandcastle";
-import type { Agent, AgentCall, AgentResult, Finding, Review, TokenUsage } from "./agent.js";
+import { SEVERITIES, type Agent, type AgentCall, type AgentResult, type Finding, type Review, type Severity, type TokenUsage } from "./agent.js";
 import type { Auth } from "./auth.js";
-import type { SandboxChoice } from "./config.js";
+import { CONFIG_FILE, isObject, type SandboxChoice } from "./config.js";
 
 /** Sandcastle's default completion signal: the agent prints it to end the iteration loop early. */
 const COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
@@ -45,7 +45,7 @@ async function sandboxProvider(choice: SandboxChoice): Promise<SandboxProvider> 
   if (choice === "docker") return (await import("@ai-hero/sandcastle/sandboxes/docker")).docker();
   if (process.platform === "darwin") return (await import("@ai-hero/sandcastle/sandboxes/seatbelt")).seatbelt();
   if (process.platform === "linux") return (await import("@ai-hero/sandcastle/sandboxes/bwrap")).bwrap();
-  throw new Error(`No native sandbox for ${process.platform}. Set "sandbox": "docker" in sandcastle-pro.config.json.`);
+  throw new Error(`No native sandbox for ${process.platform}. Set "sandbox": "docker" in ${CONFIG_FILE}.`);
 }
 
 /** The total across iterations, or undefined when no iteration reported usage. */
@@ -75,15 +75,15 @@ function parseReview(stdout: string): Review | undefined {
   } catch {
     return undefined;
   }
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const { findings, specDisagreements } = raw as Record<string, unknown>;
+  if (!isObject(raw)) return undefined;
+  const { findings, specDisagreements } = raw;
   if (!Array.isArray(findings) || !findings.every(isFinding)) return undefined;
   if (!Array.isArray(specDisagreements) || !specDisagreements.every((d) => typeof d === "string")) return undefined;
   return { findings, specDisagreements };
 }
 
 function isFinding(value: unknown): value is Finding {
-  if (typeof value !== "object" || value === null) return false;
-  const { severity, fixed, description } = value as Record<string, unknown>;
-  return (severity === "critical" || severity === "non-critical") && typeof fixed === "boolean" && typeof description === "string";
+  if (!isObject(value)) return false;
+  const { severity, fixed, description } = value;
+  return SEVERITIES.includes(severity as Severity) && typeof fixed === "boolean" && typeof description === "string";
 }

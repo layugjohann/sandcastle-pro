@@ -32,7 +32,9 @@ export interface TokenUsage {
   cacheCreationTokens?: number;
 }
 
-export type Severity = "critical" | "non-critical";
+export const SEVERITIES = ["critical", "non-critical"] as const;
+
+export type Severity = (typeof SEVERITIES)[number];
 
 /** One problem identified during a Review Session. */
 export interface Finding {

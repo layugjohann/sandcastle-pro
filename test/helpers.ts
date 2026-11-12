@@ -17,18 +17,23 @@ export function writeFile(root: string, path: string, content: string): void {
 }
 
 /**
- * Points `HOME` at a fresh temp directory around each test, so the Personal
+ * Points `HOME` at a fresh temp directory, and unsets `XDG_CONFIG_HOME`, around each test, so the Personal
  * Coding Standards layer never comes from the real user. Call at the top of a test file.
  */
 export function useTempHome(): { readonly dir: string } {
-  const original = process.env.HOME;
+  const original = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
   const home = { dir: "" };
   beforeEach(() => {
     home.dir = mkdtempSync(join(tmpdir(), "sandcastle-pro-home-"));
     process.env.HOME = home.dir;
+    // A real XDG_CONFIG_HOME would point the Personal layer outside the temp home.
+    delete process.env.XDG_CONFIG_HOME;
   });
   afterEach(() => {
-    process.env.HOME = original;
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     rmSync(home.dir, { recursive: true, force: true });
   });
   return home;

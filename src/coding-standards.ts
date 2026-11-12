@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 export type CodingStandardsLayerName = "Project" | "Personal" | "Preset";
 
@@ -14,7 +14,7 @@ export interface CodingStandardsLayer {
   mustRules: string[];
 }
 
-/** The Personal layer, relative to the user's home directory. */
+/** The Personal layer, relative to the user's home directory, used when `XDG_CONFIG_HOME` is not set. */
 export const PERSONAL_CODING_STANDARDS = ".config/sandcastle-pro/CODING_STANDARDS.md";
 /** The Project layer, relative to the repo root. */
 export const PROJECT_CODING_STANDARDS = ".sandcastle/CODING_STANDARDS.md";
@@ -39,20 +39,28 @@ const PRESET_CODING_STANDARDS = `# Preset Coding Standards
 export async function loadCodingStandards(repoDir: string): Promise<CodingStandardsLayer[]> {
   const sources: [CodingStandardsLayerName, string | undefined][] = [
     ["Project", await readOptional(join(repoDir, PROJECT_CODING_STANDARDS))],
-    ["Personal", await readOptional(join(homedir(), PERSONAL_CODING_STANDARDS))],
+    ["Personal", await readOptional(personalPath())],
     ["Preset", PRESET_CODING_STANDARDS],
   ];
   return sources.flatMap(([name, text]) => (text === undefined ? [] : [parseLayer(name, text)]));
 }
 
-/** Splits a layer into its `## Must` section, as separate Must Rules, and everything else. */
+/** The Personal layer's file: under `XDG_CONFIG_HOME` when it is set to an absolute path, else `~/.config`. */
+function personalPath(): string {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  // The XDG spec says a relative value is invalid and must be ignored.
+  if (xdg && isAbsolute(xdg)) return join(xdg, "sandcastle-pro", "CODING_STANDARDS.md");
+  return join(homedir(), PERSONAL_CODING_STANDARDS);
+}
+
+/** Splits a layer into its `## Must` (or `## Must Rules`) section, as separate Must Rules, and everything else. */
 function parseLayer(name: CodingStandardsLayerName, text: string): CodingStandardsLayer {
   const nonMustLines: string[] = [];
   const mustLines: string[] = [];
   let inMust = false;
   for (const { line, heading } of classifyLines(text)) {
     // A Must section runs until the next heading at its own level or above.
-    if (heading !== undefined && heading.level <= 2) inMust = heading.level === 2 && /^must$/i.test(heading.title);
+    if (heading !== undefined && heading.level <= 2) inMust = heading.level === 2 && /^must(?: rules?)?$/i.test(heading.title);
     else if (inMust) {
       mustLines.push(line);
       continue;

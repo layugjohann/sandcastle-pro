@@ -79,14 +79,14 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
 
 /**
  * The Gate section: the reviewer runs these only to check its own fixes, because
- * the Run Workflow runs the Gate itself once the review is done.
+ * the Run runs the Gate itself once the review is done.
  */
 function gateSection(commands: readonly string[]): string {
   return `## Gate
 
-The Run Workflow runs the Gate itself after this review, in the Issue's branch, and the change only reaches awaiting-merge if every command passes. The configured Gate commands, run in order:
+The Run runs the Gate itself after this Review Session, on the Issue's branch, and the change only reaches awaiting-merge if every command passes. The configured Gate commands, one per line, run in order:
 
-${commands.map((command) => `- \`${command}\``).join("\n")}
+${fenced(commands.join("\n"), "sh")}
 
 Run them yourself only to check your own fixes before you finish.`;
 }

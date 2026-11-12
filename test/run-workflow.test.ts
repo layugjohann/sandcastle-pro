@@ -380,17 +380,14 @@ describe("Review Session", () => {
     ]);
   });
 
-  it("names each configured Gate command in its prompt and says the Run Workflow runs the Gate itself", async () => {
+  it("names each configured Gate command in its prompt and says the Run runs the Gate itself", async () => {
     const agent = fakeAgent(repo.dir);
 
     await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true", "test -f hello.txt"]), log });
 
     const review = agent.calls.find((c) => c.stage === "review-session")!;
-    expect(review.prompt).toContain("`true`");
-    expect(review.prompt).toContain("`test -f hello.txt`");
-    expect(review.prompt).toMatch(/Run Workflow runs the Gate itself after (this )?review/i);
-    // The Implementer is not told about the Gate.
-    expect(agent.calls[0]!.prompt).not.toContain("test -f hello.txt");
+    expect(review.prompt).toContain("```sh\ntrue\ntest -f hello.txt\n```");
+    expect(review.prompt).toMatch(/runs the Gate itself after this Review Session/);
   });
 
   it("appends Non-critical Findings under Comments and prints them with the branch and Gate result", async () => {

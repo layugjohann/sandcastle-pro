@@ -46,9 +46,10 @@ export interface Review {
   specDisagreements: string[];
 }
 
+/** `usage` is absent when the Agent could not report it; the Run carries on and shows it as unknown. */
 export type AgentResult =
-  | { kind: "completed"; usage: TokenUsage; /** Present for a Review Session. */ review?: Review }
-  | { kind: "limit-reached"; sessionId: string; usage: TokenUsage };
+  | { kind: "completed"; usage?: TokenUsage; /** Present for a Review Session. */ review?: Review }
+  | { kind: "limit-reached"; sessionId: string; usage?: TokenUsage };
 
 export interface Agent {
   run(call: AgentCall): Promise<AgentResult>;

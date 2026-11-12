@@ -11,6 +11,7 @@ import { runGate, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 import { buildImplementerPrompt, buildReviewPrompt } from "./prompt.js";
+import { formatUsage, type IssueUsage } from "./usage.js";
 
 const exec = promisify(execFile);
 
@@ -29,10 +30,18 @@ export interface RunOptions {
   log?: (line: string) => void;
 }
 
+interface ReviewedIssue {
+  issue: Issue;
+  branch: string;
+  review: Review;
+  /** Tokens used by each stage. */
+  usage: IssueUsage;
+}
+
 export type IssueResult =
-  | { outcome: "awaiting-merge"; issue: Issue; branch: string; review: Review }
-  | { outcome: "spec-disagreement"; issue: Issue; branch: string; review: Review }
-  | { outcome: "gate-failed"; issue: Issue; branch: string; review: Review; gate: GateResult & { passed: false } };
+  | ({ outcome: "awaiting-merge" } & ReviewedIssue)
+  | ({ outcome: "spec-disagreement" } & ReviewedIssue)
+  | ({ outcome: "gate-failed"; gate: GateResult & { passed: false } } & ReviewedIssue);
 
 export interface RunResult {
   /** The Issues this Run processed, in order. Empty when none was ready. */
@@ -72,6 +81,9 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
       if (issues.length < count) log(`Stopping the Run: Issue ${issue.id} failed the Gate, so no further Issues are started.`);
       break;
     }
+  }
+  if (issues.length > 0) {
+    log(["Usage this Run:", ...issues.map((r) => `Issue ${r.issue.id}: ${formatUsage(r.usage)}`)].join("\n"));
   }
   return { issues };
 }
@@ -140,12 +152,15 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   });
   assertCompleted(reviewed, "Review Session");
   const { review } = reviewed;
+  const usage: IssueUsage = { implementer: implemented.usage, "review-session": reviewed.usage };
   if (!review) {
     // No structured Findings is a failed review, not a clean one; the Gate must not run on it.
     throw new Error(`Review Session on ${branch} returned no structured Findings; Issue ${issue.id} stays in-progress.`);
   }
   const report = findingsForHuman(review.findings);
   if (report) await store.comment(issue, report);
+  // Every outcome below keeps its cost history with the Issue.
+  await store.comment(issue, formatUsage(usage));
 
   if (review.specDisagreements.length > 0) {
     // The Spec is the human's decision: log the disagreement, never act on it.
@@ -153,7 +168,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     await store.comment(issue, disagreements);
     await store.transition(issue, "needs-info");
     log(summary(`Issue ${issue.id} needs info.`, branch, "not run", [disagreements, report]));
-    return { outcome: "spec-disagreement", issue, branch, review };
+    return { outcome: "spec-disagreement", issue, branch, review, usage };
   }
 
   const gate = await withWorktree(repoDir, branch, (dir) => runGate(config.gate, dir));
@@ -163,12 +178,12 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     await store.transition(issue, "ready-for-human");
     log(`Gate failed on ${branch}:\n${gate.output}`);
     log(summary(`Issue ${issue.id} did not pass the Gate.`, branch, "failed", [report]));
-    return { outcome: "gate-failed", issue, branch, gate, review };
+    return { outcome: "gate-failed", issue, branch, gate, review, usage };
   }
 
   await store.transition(issue, "awaiting-merge");
   log(summary(`Issue ${issue.id} is awaiting merge.`, branch, "passed", [report]));
-  return { outcome: "awaiting-merge", issue, branch, review };
+  return { outcome: "awaiting-merge", issue, branch, review, usage };
 }
 
 /** The Findings the human must see: Non-critical ones, and any Critical one left unfixed. */

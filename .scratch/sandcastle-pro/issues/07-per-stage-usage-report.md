@@ -1,6 +1,6 @@
 # 07: Per-stage usage report
 
-Status: ready-for-agent
+Status: done
 Blocked by: 02
 
 Spec: `.scratch/sandcastle-pro/spec.md`

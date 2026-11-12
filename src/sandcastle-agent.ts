@@ -2,7 +2,7 @@
  * The production Agent: maps an Agent call onto Sandcastle's `run()`.
  * Kept thin on purpose. It has no automated tests and is checked by hand with one real Run.
  */
-import { claudeCode, run, type IterationUsage, type SandboxProvider } from "@ai-hero/sandcastle";
+import { claudeCode, run, type AgentProvider, type IterationUsage, type SandboxProvider } from "@ai-hero/sandcastle";
 import { SEVERITIES, type Agent, type AgentCall, type AgentResult, type Finding, type Review, type Severity, type TokenUsage } from "./agent.js";
 import type { Auth } from "./auth.js";
 import { CONFIG_FILE, isObject, type SandboxChoice } from "./config.js";
@@ -22,7 +22,7 @@ export function createSandcastleAgent({ repoDir, sandbox, auth }: SandcastleAgen
       const result = await run({
         cwd: repoDir,
         name: call.stage,
-        agent: claudeCode(call.model, { effort: call.effort, env: auth.env }),
+        agent: sandboxedClaudeCode(claudeCode(call.model, { effort: call.effort, env: auth.env })),
         sandbox: await sandboxProvider(sandbox),
         prompt: `${call.prompt}\nWhen the work is finished, print ${COMPLETION_SIGNAL} on its own line.\n`,
         // Sandcastle resumes a session for exactly one iteration.
@@ -36,6 +36,20 @@ export function createSandcastleAgent({ repoDir, sandbox, auth }: SandcastleAgen
       const usage = sumUsage(result.iterations.map((i) => i.usage));
       if (call.stage === "implementer") return { kind: "completed", usage };
       return { kind: "completed", usage, review: parseReview(result.stdout) };
+    },
+  };
+}
+
+/**
+ * Claude Code keeps its temp files in `/tmp/claude-<uid>`, which the native sandbox can't write to.
+ * Point it at the sandbox's own private `TMPDIR` instead; the shell expands it inside the sandbox.
+ */
+function sandboxedClaudeCode(provider: AgentProvider): AgentProvider {
+  return {
+    ...provider,
+    buildPrintCommand(options) {
+      const built = provider.buildPrintCommand(options);
+      return { ...built, command: `CLAUDE_CODE_TMPDIR="$TMPDIR" ${built.command}` };
     },
   };
 }

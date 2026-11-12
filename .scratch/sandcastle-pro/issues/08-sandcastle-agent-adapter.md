@@ -11,7 +11,7 @@ Spec: `.scratch/sandcastle-pro/spec.md`
 - [x] The adapter passes model, effort, iteration limit, branch and resume session through to Sandcastle
 - [x] The sandbox provider follows the configured choice
 - [x] The OAuth token is the default auth, with the API key as a fallback, and the error is clear if neither is set
-- [ ] One real Run on a sample project is verified by hand, with the steps written in the ticket comments
+- [x] One real Run on a sample project is verified by hand, with the steps written in the ticket comments
 
 ## Comments
 
@@ -33,3 +33,18 @@ Spec: `.scratch/sandcastle-pro/spec.md`
    - Remove both: `run` fails with the `claude setup-token` message before any Issue changes status.
 9. Tick the last box above and note anything unexpected here. In particular, check whether the Review Session's fenced `json` block reached `stdout`.
 
+
+**Real Run, verified 2026-11-13** (seatbelt sandbox, `claude-haiku-5-5` at low effort, OAuth token)
+
+- The Implementer committed `hello.txt` on `issue/01-hello`. The Gate passed, and the Issue is `awaiting-merge` with a Usage comment for both stages. `main` was untouched, and the Run exited 0.
+- The Review Session's fenced `json` block reached `stdout` and was parsed: "No Findings to report."
+- Usage: Implementer 74 output and 18,396 cache read; Review Session 325 output and 19,239 cache read.
+- The auth fallbacks in step 8 were not run by hand. The auth tests cover them.
+
+What the Run turned up:
+
+- **Fixed in this Issue:** Claude Code writes its temp files to `/tmp/claude-<uid>`, and seatbelt blocks that, so every Run failed as soon as the agent started. The adapter now starts `claude` with `CLAUDE_CODE_TMPDIR="$TMPDIR"`, which points it at the sandbox's private temp dir.
+- **Host setup:** macOS `/usr/bin/git` is an Xcode shim, and it fails inside seatbelt. It needs a real git, such as Homebrew's, first on `PATH`. Issue 10's `init` docs should say so.
+- **Running from inside Claude Code:** the `CLAUDE_CODE_*` variables of the parent session leak into the Run, so run it from a plain terminal.
+- **A failed Run strands the Issue:** an Agent error leaves the Issue `in-progress` with an empty branch. This has been added to Issue 09.
+- **The Review Session doesn't know the Gate commands:** it reported "No Gate checks are configured". This is Issue 12.

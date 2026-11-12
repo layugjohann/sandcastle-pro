@@ -14,3 +14,8 @@ Spec: `.scratch/sandcastle-pro/spec.md`
 - [ ] The next Run resumes a paused Issue before any `ready-for-agent` Issue
 - [ ] A pause during the Implementer resumes the Implementer; a pause during the Review Session resumes the Review Session
 - [ ] The resumed stage continues the original session, not a fresh one
+- [ ] When an Agent call fails for any other reason, the Issue goes back to `ready-for-agent` (or `paused` if a session can be resumed). It is not left `in-progress`, and an empty Issue branch is deleted.
+
+## Comments
+
+Found in Issue 08's real Run: a sandbox or auth error left the Issue `in-progress` with an empty `issue/NN-slug` branch, and the next Run said "No Issue is ready" until the status was reset by hand.

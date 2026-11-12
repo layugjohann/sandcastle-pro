@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { Agent, AgentResult, Finding, Review } from "./agent.js";
+import { STAGE_NAMES, type Agent, type AgentResult, type Finding, type Review, type Stage } from "./agent.js";
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, type GateResult } from "./gate.js";
@@ -30,18 +30,18 @@ export interface RunOptions {
   log?: (line: string) => void;
 }
 
-interface ReviewedIssue {
+/** What every outcome of an Issue carries. */
+interface IssueOutcomeDetails {
   issue: Issue;
   branch: string;
   review: Review;
-  /** Tokens used by each stage. */
   usage: IssueUsage;
 }
 
 export type IssueResult =
-  | ({ outcome: "awaiting-merge" } & ReviewedIssue)
-  | ({ outcome: "spec-disagreement" } & ReviewedIssue)
-  | ({ outcome: "gate-failed"; gate: GateResult & { passed: false } } & ReviewedIssue);
+  | ({ outcome: "awaiting-merge" } & IssueOutcomeDetails)
+  | ({ outcome: "spec-disagreement" } & IssueOutcomeDetails)
+  | ({ outcome: "gate-failed"; gate: GateResult & { passed: false } } & IssueOutcomeDetails);
 
 export interface RunResult {
   /** The Issues this Run processed, in order. Empty when none was ready. */
@@ -67,6 +67,20 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   await markMergedIssuesDone(context);
 
   const issues: IssueResult[] = [];
+  try {
+    await runIssues(issues, count, context);
+  } finally {
+    // Printed even when an Issue throws, so the cost of the Issues already finished is not lost.
+    if (issues.length > 0) {
+      log(["Usage this Run:", ...issues.map((r) => `Issue ${r.issue.id}: ${formatUsage(r.usage)}`)].join("\n"));
+    }
+  }
+  return { issues };
+}
+
+/** Processes ready Issues one after another, pushing each result onto `issues` as it finishes. */
+async function runIssues(issues: IssueResult[], count: number, context: IssueContext): Promise<void> {
+  const { store, log } = context;
   while (issues.length < count) {
     const issue = await store.next();
     if (!issue) {
@@ -82,10 +96,6 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
       break;
     }
   }
-  if (issues.length > 0) {
-    log(["Usage this Run:", ...issues.map((r) => `Issue ${r.issue.id}: ${formatUsage(r.usage)}`)].join("\n"));
-  }
-  return { issues };
 }
 
 type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "targetBranch"> & {
@@ -134,7 +144,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     branch,
     maxIterations: config.maxIterations.implementer,
   });
-  assertCompleted(implemented, "Implementer");
+  assertCompleted(implemented, "implementer");
 
   const reviewed = await agent.run({
     stage: "review-session",
@@ -150,17 +160,17 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     branch,
     maxIterations: config.maxIterations.reviewSession,
   });
-  assertCompleted(reviewed, "Review Session");
-  const { review } = reviewed;
+  assertCompleted(reviewed, "review-session");
   const usage: IssueUsage = { implementer: implemented.usage, "review-session": reviewed.usage };
+  // Every outcome, including a failed review, keeps its cost history with the Issue.
+  await store.comment(issue, formatUsage(usage));
+  const { review } = reviewed;
   if (!review) {
     // No structured Findings is a failed review, not a clean one; the Gate must not run on it.
     throw new Error(`Review Session on ${branch} returned no structured Findings; Issue ${issue.id} stays in-progress.`);
   }
   const report = findingsForHuman(review.findings);
   if (report) await store.comment(issue, report);
-  // Every outcome below keeps its cost history with the Issue.
-  await store.comment(issue, formatUsage(usage));
 
   if (review.specDisagreements.length > 0) {
     // The Spec is the human's decision: log the disagreement, never act on it.
@@ -211,11 +221,11 @@ function summary(headline: string, branch: string, gate: string, sections: reado
 
 function assertCompleted(
   result: AgentResult,
-  stage: string,
+  stage: Stage,
 ): asserts result is Extract<AgentResult, { kind: "completed" }> {
   if (result.kind === "completed") return;
   // Pausing at the usage limit is not built yet; the Issue stays in-progress.
-  throw new Error(`${stage} stopped at the usage limit (session ${result.sessionId}); pausing is not supported yet.`);
+  throw new Error(`${STAGE_NAMES[stage]} stopped at the usage limit (session ${result.sessionId}); pausing is not supported yet.`);
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {

@@ -552,6 +552,31 @@ describe("Usage report", () => {
     expect(output.join("\n")).toContain("Issue 01: Usage: Implementer 1,200 input");
   });
 
+  it("records usage on the Issue when the Review Session returns no Findings", async () => {
+    const agent = fakeAgent(repo.dir, { usage, review: { noFindings: true } });
+
+    await expect(runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log })).rejects.toThrow();
+
+    expect(usageLine("01-only.md")).toContain("Implementer 1,200 input");
+  });
+
+  it("still prints the usage of finished Issues when a later Issue stops the Run with an error", async () => {
+    repo.write(`${ISSUES}/02-next.md`, issueFile({ title: "02: Next", status: "ready-for-agent" }));
+    repo.commitAll("add second issue");
+    const agent = fakeAgent(repo.dir, {
+      usage,
+      onCall: (call) => {
+        if (call.branch === "issue/02-next") throw new Error("agent crashed");
+      },
+    });
+
+    await expect(
+      runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log, count: 2 }),
+    ).rejects.toThrow("agent crashed");
+
+    expect(output.join("\n")).toContain("Issue 01: Usage: Implementer 1,200 input");
+  });
+
   it("prints usage for each Issue of a Run", async () => {
     repo.write(`${ISSUES}/02-next.md`, issueFile({ title: "02: Next", status: "ready-for-agent" }));
     repo.commitAll("add second issue");

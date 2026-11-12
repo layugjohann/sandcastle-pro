@@ -9,6 +9,9 @@ export type Effort = (typeof EFFORTS)[number];
 
 export type Stage = "implementer" | "review-session";
 
+/** Each stage's name as the human reads it, in Run order. */
+export const STAGE_NAMES: Record<Stage, string> = { implementer: "Implementer", "review-session": "Review Session" };
+
 export interface AgentCall {
   /** Which stage of the Run this call is. */
   stage: Stage;

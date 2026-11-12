@@ -1,9 +1,7 @@
-import type { Stage, TokenUsage } from "./agent.js";
+import { STAGE_NAMES, type Stage, type TokenUsage } from "./agent.js";
 
 /** The tokens each stage of one Issue used. A stage is absent when the Agent reported no usage for it. */
 export type IssueUsage = Partial<Record<Stage, TokenUsage>>;
-
-const STAGE_NAMES: Record<Stage, string> = { implementer: "Implementer", "review-session": "Review Session" };
 
 /** One line: each stage's input, output, cache creation and cache read tokens, "unknown" where not reported. */
 export function formatUsage(usage: IssueUsage): string {
@@ -14,13 +12,13 @@ export function formatUsage(usage: IssueUsage): string {
 function formatStage(usage: TokenUsage | undefined): string {
   if (!usage) return "unknown";
   return [
-    `${count(usage.inputTokens)} input`,
-    `${count(usage.outputTokens)} output`,
-    `${count(usage.cacheCreationTokens)} cache creation`,
-    `${count(usage.cacheReadTokens)} cache read`,
+    `${formatTokens(usage.inputTokens)} input`,
+    `${formatTokens(usage.outputTokens)} output`,
+    `${formatTokens(usage.cacheCreationTokens)} cache creation`,
+    `${formatTokens(usage.cacheReadTokens)} cache read`,
   ].join(", ");
 }
 
-function count(tokens: number | undefined): string {
+function formatTokens(tokens: number | undefined): string {
   return tokens === undefined ? "unknown" : tokens.toLocaleString("en-US");
 }

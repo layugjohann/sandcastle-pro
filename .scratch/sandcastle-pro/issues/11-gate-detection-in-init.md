@@ -1,6 +1,6 @@
 # 11: Gate detection and interactive confirm in init
 
-Status: ready-for-agent
+Status: done
 Blocked by: 10
 
 Spec: `.scratch/sandcastle-pro/spec.md`

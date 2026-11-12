@@ -81,7 +81,11 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
     maxIterations: DEFAULTS.reviewMaxIterations,
   });
   assertCompleted(reviewed, "Review Session");
-  const review = reviewed.review ?? { findings: [], specDisagreements: [] };
+  const { review } = reviewed;
+  if (!review) {
+    // No structured Findings is a failed review, not a clean one; the Gate must not run on it.
+    throw new Error(`Review Session on ${branch} returned no structured Findings; Issue ${issue.id} stays in-progress.`);
+  }
   const report = findingsForHuman(review.findings);
   if (report) await store.comment(issue, report);
 

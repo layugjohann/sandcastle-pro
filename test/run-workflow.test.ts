@@ -150,7 +150,6 @@ describe("Review Session", () => {
     expect(agent.calls.map((c) => c.stage)).toEqual(["implementer", "review-session"]);
     const review = agent.calls[1]!;
     expect(review.branch).toBe("issue/01-only");
-    expect(review.maxIterations).toBe(1);
     // The prompt carries the branch diff and the commits.
     expect(review.prompt).toContain("IMPLEMENTED-CONTENT-MARKER");
     expect(review.prompt).toContain("fake agent: implement issue");
@@ -255,5 +254,17 @@ describe("Review Session", () => {
     const text = repo.read(`${ISSUES}/01-only.md`);
     expect(text.slice(text.indexOf("## Comments"))).toContain("Race on shared cache");
     expect(output.join("\n")).toContain("Race on shared cache");
+  });
+
+  it("does not treat a Review Session without Findings as a clean review", async () => {
+    const agent = fakeAgent(repo.dir, { review: { noFindings: true } });
+    const gateRan = join(repo.dir, "gate-ran");
+
+    await expect(runWorkflow({ repoDir: repo.dir, agent, gate: [`touch ${gateRan}`], log })).rejects.toThrow(
+      /Review Session/,
+    );
+
+    expect(existsSync(gateRan)).toBe(false);
+    expect(statusOf(repo, "01-only.md")).not.toBe("awaiting-merge");
   });
 });

@@ -57,6 +57,8 @@ export interface ReviewScript {
   /** Files the Review Session commits, e.g. to fix a Critical Finding. None by default. */
   files?: Record<string, string>;
   review?: Partial<Review>;
+  /** Complete without any structured Findings, as when the output can't be read. */
+  noFindings?: boolean;
 }
 
 /**
@@ -85,6 +87,7 @@ export function fakeAgent(
       }
       const files = opts.review?.files ?? {};
       if (Object.keys(files).length > 0) commitOnBranch(repoDir, call.branch, files, "fake agent: fix critical finding");
+      if (opts.review?.noFindings) return { kind: "completed", usage };
       return {
         kind: "completed",
         usage,

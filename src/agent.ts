@@ -40,7 +40,7 @@ export interface Finding {
 /** The structured output of a Review Session. */
 export interface Review {
   findings: Finding[];
-  /** Places where the reviewer believes the Spec itself is wrong. Logged, never fixed. */
+  /** Places where the Review Session believes the Spec itself is wrong. Logged, never fixed. */
   specDisagreements: string[];
 }
 

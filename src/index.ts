@@ -10,3 +10,4 @@ export type { Agent, AgentCall, AgentResult, Effort, Finding, Review, Severity, 
 export { runGate, type GateResult } from "./gate.js";
 export { createIssueStore, STATUSES, type BlockedIssue, type Issue, type IssueStore, type Status } from "./issue-store.js";
 export { runWorkflow, type IssueResult, type RunOptions, type RunResult } from "./run-workflow.js";
+export type { IssueUsage } from "./usage.js";

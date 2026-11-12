@@ -488,6 +488,108 @@ describe("Review Session", () => {
   });
 });
 
+describe("Usage report", () => {
+  let repo: TempRepo;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const usage = {
+    implementer: { inputTokens: 1200, outputTokens: 340, cacheCreationTokens: 5000, cacheReadTokens: 80000 },
+    "review-session": { inputTokens: 900, outputTokens: 120, cacheCreationTokens: 700, cacheReadTokens: 30000 },
+  };
+
+  function usageLine(file: string): string | undefined {
+    const text = repo.read(`${ISSUES}/${file}`);
+    return text.slice(text.indexOf("## Comments")).split("\n").find((line) => line.includes("Usage"));
+  }
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    output = [];
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+  });
+  afterEach(() => repo.cleanup());
+
+  it("prints each stage's usage and appends a one-line summary to an Issue awaiting merge", async () => {
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir, { usage }), config: configWithGate(["true"]), log });
+
+    const expected =
+      "Usage: Implementer 1,200 input, 340 output, 5,000 cache creation, 80,000 cache read; " +
+      "Review Session 900 input, 120 output, 700 cache creation, 30,000 cache read.";
+    expect(usageLine("01-only.md")).toBe(expected);
+    expect(output.join("\n")).toContain(`Issue 01: ${expected}`);
+  });
+
+  it("shows usage the Agent did not report as unknown and still finishes the Run", async () => {
+    const agent = fakeAgent(repo.dir, {
+      usage: { implementer: "missing", "review-session": { inputTokens: 900, outputTokens: 120 } },
+    });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
+    const expected =
+      "Usage: Implementer unknown; Review Session 900 input, 120 output, unknown cache creation, unknown cache read.";
+    expect(usageLine("01-only.md")).toBe(expected);
+    expect(output.join("\n")).toContain(`Issue 01: ${expected}`);
+  });
+
+  it("reports usage for an Issue that fails the Gate", async () => {
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir, { usage }), config: configWithGate(["false"]), log });
+
+    expect(statusOf(repo, "01-only.md")).toBe("ready-for-human");
+    expect(usageLine("01-only.md")).toContain("Implementer 1,200 input");
+    expect(output.join("\n")).toContain("Issue 01: Usage: Implementer 1,200 input");
+  });
+
+  it("reports usage for an Issue that needs info", async () => {
+    const agent = fakeAgent(repo.dir, { usage, review: { review: { specDisagreements: ["The Spec is wrong"] } } });
+
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
+
+    expect(statusOf(repo, "01-only.md")).toBe("needs-info");
+    expect(usageLine("01-only.md")).toContain("Review Session 900 input");
+    expect(output.join("\n")).toContain("Issue 01: Usage: Implementer 1,200 input");
+  });
+
+  it("records usage on the Issue when the Review Session returns no Findings", async () => {
+    const agent = fakeAgent(repo.dir, { usage, review: { noFindings: true } });
+
+    await expect(runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log })).rejects.toThrow();
+
+    expect(usageLine("01-only.md")).toContain("Implementer 1,200 input");
+  });
+
+  it("still prints the usage of finished Issues when a later Issue stops the Run with an error", async () => {
+    repo.write(`${ISSUES}/02-next.md`, issueFile({ title: "02: Next", status: "ready-for-agent" }));
+    repo.commitAll("add second issue");
+    const agent = fakeAgent(repo.dir, {
+      usage,
+      onCall: (call) => {
+        if (call.branch === "issue/02-next") throw new Error("agent crashed");
+      },
+    });
+
+    await expect(
+      runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log, count: 2 }),
+    ).rejects.toThrow("agent crashed");
+
+    expect(output.join("\n")).toContain("Issue 01: Usage: Implementer 1,200 input");
+  });
+
+  it("prints usage for each Issue of a Run", async () => {
+    repo.write(`${ISSUES}/02-next.md`, issueFile({ title: "02: Next", status: "ready-for-agent" }));
+    repo.commitAll("add second issue");
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir, { usage }), config: configWithGate(["true"]), log, count: 2 });
+
+    const printed = output.join("\n");
+    expect(printed).toContain("Issue 01: Usage: Implementer 1,200 input");
+    expect(printed).toContain("Issue 02: Usage: Implementer 1,200 input");
+    expect(usageLine("02-next.md")).toContain("Implementer 1,200 input");
+  });
+});
+
 describe("Coding Standards", () => {
   let repo: TempRepo;
 

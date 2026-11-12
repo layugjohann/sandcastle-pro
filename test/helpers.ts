@@ -3,7 +3,16 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach } from "vitest";
-import { DEFAULT_CONFIG, type Agent, type AgentCall, type AgentResult, type Config, type Review } from "../src/index.js";
+import {
+  DEFAULT_CONFIG,
+  type Agent,
+  type AgentCall,
+  type AgentResult,
+  type Config,
+  type Review,
+  type Stage,
+  type TokenUsage,
+} from "../src/index.js";
 
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -99,6 +108,8 @@ export function fakeAgent(
     files?: Record<string, string>;
     review?: ReviewScript;
     onCall?: (call: AgentCall) => void;
+    /** Token usage each stage reports; "missing" reports none. Defaults to 100 in, 50 out. */
+    usage?: Partial<Record<Stage, TokenUsage | "missing">>;
   } = {},
 ): FakeAgent {
   const calls: AgentCall[] = [];
@@ -107,7 +118,8 @@ export function fakeAgent(
     async run(call): Promise<AgentResult> {
       calls.push(call);
       opts.onCall?.(call);
-      const usage = { inputTokens: 100, outputTokens: 50 };
+      const scripted = opts.usage?.[call.stage] ?? { inputTokens: 100, outputTokens: 50 };
+      const usage = scripted === "missing" ? undefined : scripted;
       if (call.stage === "implementer") {
         commitOnBranch(repoDir, call.branch, opts.files ?? { "feature.txt": "implemented\n" }, "fake agent: implement issue");
         return { kind: "completed", usage };

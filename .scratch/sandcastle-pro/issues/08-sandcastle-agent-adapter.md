@@ -1,6 +1,6 @@
 # 08: Sandcastle Agent adapter and the real run command
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01
 
 Spec: `.scratch/sandcastle-pro/spec.md`

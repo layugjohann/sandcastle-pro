@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 import type { Agent, AgentResult, Effort, Finding, Review } from "./agent.js";
 import { runGate, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore } from "./issue-store.js";
-import { buildImplementerPrompt, buildReviewPrompt, fenced } from "./prompt.js";
+import { fenced } from "./markdown.js";
+import { buildImplementerPrompt, buildReviewPrompt } from "./prompt.js";
 
 const exec = promisify(execFile);
 
@@ -53,13 +54,17 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   const log = options.log ?? ((line: string) => console.log(line));
   const store = options.store ?? createIssueStore(options.repoDir);
   const count = options.count ?? DEFAULTS.count;
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error(`count must be a positive whole number, got ${count}.`);
+  }
   const context = { ...options, log, store };
 
   const issues: IssueResult[] = [];
   while (issues.length < count) {
     const issue = await store.next();
     if (!issue) {
-      log(`No Issue is ready for an agent. ${issues.length === 0 ? "Nothing to do." : `Processed ${issues.length} of ${count}.`}`);
+      const progress = issues.length === 0 ? "Nothing to do." : `Processed ${issues.length} of ${count}.`;
+      log(`No Issue is ready for an agent. ${progress}`);
       break;
     }
     const result = await runIssue(issue, context);
@@ -72,7 +77,7 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   return { issues };
 }
 
-type IssueContext = RunOptions & { log: (line: string) => void; store: IssueStore };
+type IssueContext = Omit<RunOptions, "count" | "log" | "store"> & { log: (line: string) => void; store: IssueStore };
 
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
   const { repoDir, agent, log, store } = options;

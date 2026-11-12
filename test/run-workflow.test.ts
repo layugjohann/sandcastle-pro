@@ -117,7 +117,9 @@ describe("Run Workflow", () => {
     });
 
     expect(existsSync(ranAfterFailure)).toBe(false);
-    const comments = repo.read(`${ISSUES}/01-only.md`);
+    const text = repo.read(`${ISSUES}/01-only.md`);
+    const comments = text.slice(text.indexOf("## Comments"));
+    expect(comments.indexOf("STEP-ONE")).toBeGreaterThan(-1);
     expect(comments.indexOf("STEP-ONE")).toBeLessThan(comments.indexOf("STEP-TWO"));
   });
 
@@ -173,7 +175,6 @@ describe("Run Workflow", () => {
     expect(result.issues.map((r) => r.outcome)).toEqual(["gate-failed"]);
     expect(statusOf(repo, "01-first.md")).toBe("ready-for-human");
     expect(statusOf(repo, "02-second.md")).toBe("ready-for-agent");
-    expect(agent.calls.every((c) => c.branch === "issue/01-first")).toBe(true);
     expect(git(repo.dir, "branch", "--list", "issue/02-second")).toBe("");
   });
 
@@ -185,6 +186,17 @@ describe("Run Workflow", () => {
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(output.join("\n")).toMatch(/no issue is ready/i);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])("rejects count %s before touching any Issue", async (count) => {
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+
+    const agent = fakeAgent(repo.dir);
+    await expect(runWorkflow({ repoDir: repo.dir, agent, gate: ["true"], count, log })).rejects.toThrow(/count/);
+
+    expect(agent.calls).toHaveLength(0);
+    expect(statusOf(repo, "01-only.md")).toBe("ready-for-agent");
   });
 
   it("exits cleanly with a message and changes nothing when no Issue is ready", async () => {

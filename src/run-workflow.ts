@@ -57,14 +57,17 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   if (!Number.isInteger(count) || count < 1) {
     throw new Error(`count must be a positive whole number, got ${count}.`);
   }
-  const context = { ...options, log, store };
+  const targetBranch = options.targetBranch ?? (await git(options.repoDir, "branch", "--show-current"));
+  const context = { ...options, targetBranch, log, store };
+  await markMergedIssuesDone(context);
 
   const issues: IssueResult[] = [];
   while (issues.length < count) {
     const issue = await store.next();
     if (!issue) {
       const progress = issues.length === 0 ? "Nothing to do." : `Processed ${issues.length} of ${count}.`;
-      log(`No Issue is ready for an agent. ${progress}`);
+      const blocked = (await store.blocked()).map((b) => `Issue ${b.id} is blocked by ${b.blockers.join(", ")}.`);
+      log([`No Issue is ready for an agent. ${progress}`, ...blocked].join("\n"));
       break;
     }
     const result = await runIssue(issue, context);
@@ -77,11 +80,36 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   return { issues };
 }
 
-type IssueContext = Omit<RunOptions, "count" | "log" | "store"> & { log: (line: string) => void; store: IssueStore };
+type IssueContext = Omit<RunOptions, "count" | "log" | "store" | "targetBranch"> & {
+  targetBranch: string;
+  log: (line: string) => void;
+  store: IssueStore;
+};
+
+/** Moves each `awaiting-merge` Issue whose branch the human has merged into the target branch to `done`. */
+async function markMergedIssuesDone({ repoDir, targetBranch, store, log }: IssueContext): Promise<void> {
+  for (const issue of await store.awaitingMerge()) {
+    if (!(await isMerged(repoDir, issue.branch, targetBranch))) continue;
+    await store.transition(issue, "done");
+    log(`Issue ${issue.id} is done: ${issue.branch} is merged into ${targetBranch}.`);
+  }
+}
+
+async function isMerged(repoDir: string, branch: string, target: string): Promise<boolean> {
+  try {
+    await git(repoDir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
+    await git(repoDir, "merge-base", "--is-ancestor", branch, target);
+    return true;
+  } catch (error) {
+    // Exit code 1: the branch is missing, or not reachable from the target. Anything else is a real failure.
+    if ((error as { code?: unknown }).code === 1) return false;
+    throw error;
+  }
+}
 
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
   const { repoDir, agent, log, store } = options;
-  const target = options.targetBranch ?? (await git(repoDir, "branch", "--show-current"));
+  const target = options.targetBranch;
   const { branch } = issue;
   log(`Starting Issue ${issue.id} on ${branch}`);
   await store.transition(issue, "in-progress");

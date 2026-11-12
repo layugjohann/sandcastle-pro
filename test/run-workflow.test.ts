@@ -220,6 +220,96 @@ describe("Run Workflow", () => {
   });
 });
 
+describe("Blocked Issues and merge detection", () => {
+  let repo: TempRepo;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const blockedBy = (ids: string) => `Blocked by: ${ids}\n\nDo the thing.`;
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    output = [];
+    repo.write(".scratch/feature/spec.md", "# Spec: feature\n");
+  });
+  afterEach(() => repo.cleanup());
+
+  it("skips an Issue with an unfinished blocker and picks the next eligible one", async () => {
+    repo.write(`${ISSUES}/01-base.md`, issueFile({ title: "01: Base", status: "needs-info" }));
+    repo.write(`${ISSUES}/02-done.md`, issueFile({ title: "02: Done", status: "done" }));
+    repo.write(`${ISSUES}/03-blocked.md`, issueFile({ title: "03", status: "ready-for-agent", extra: blockedBy("01, 02") }));
+    repo.write(`${ISSUES}/04-free.md`, issueFile({ title: "04", status: "ready-for-agent", extra: blockedBy("02") }));
+    repo.commitAll("add issues");
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), gate: ["true"], log });
+
+    expect(result.issues.map((r) => r.issue.id)).toEqual(["04"]);
+    expect(statusOf(repo, "03-blocked.md")).toBe("ready-for-agent");
+  });
+
+  it("exits cleanly and lists the blocked Issues when every ready Issue is blocked", async () => {
+    repo.write(`${ISSUES}/01-base.md`, issueFile({ title: "01", status: "in-progress" }));
+    repo.write(`${ISSUES}/02-waits.md`, issueFile({ title: "02", status: "ready-for-agent", extra: blockedBy("01") }));
+    repo.write(`${ISSUES}/03-waits.md`, issueFile({ title: "03", status: "ready-for-agent", extra: blockedBy("01, 02") }));
+    repo.commitAll("add issues");
+
+    const agent = fakeAgent(repo.dir);
+    const result = await runWorkflow({ repoDir: repo.dir, agent, gate: ["true"], log });
+
+    expect(result.issues).toEqual([]);
+    expect(agent.calls).toHaveLength(0);
+    const printed = output.join("\n");
+    expect(printed).toMatch(/no issue is ready/i);
+    expect(printed).toContain("Issue 02 is blocked by 01");
+    expect(printed).toContain("Issue 03 is blocked by 01, 02");
+  });
+
+  /** Gives `branch` one commit off main, and merges it into main when `merged`. */
+  function branchWithWork(branch: string, merged: boolean): void {
+    git(repo.dir, "checkout", "-q", "-b", branch);
+    repo.write(`${branch.replace("/", "-")}.txt`, "work\n");
+    repo.commitAll(`work on ${branch}`);
+    git(repo.dir, "checkout", "-q", "main");
+    if (merged) git(repo.dir, "merge", "-q", "--no-ff", "-m", `merge ${branch}`, branch);
+  }
+
+  it("moves an awaiting-merge Issue whose branch is merged to done at the start of the Run", async () => {
+    repo.write(`${ISSUES}/01-merged.md`, issueFile({ title: "01", status: "awaiting-merge" }));
+    repo.commitAll("add issues");
+    branchWithWork("issue/01-merged", true);
+
+    const agent = fakeAgent(repo.dir);
+    await runWorkflow({ repoDir: repo.dir, agent, gate: ["true"], log });
+
+    expect(statusOf(repo, "01-merged.md")).toBe("done");
+    expect(agent.calls).toHaveLength(0);
+  });
+
+  it("picks an Issue unblocked by that merge in the same Run", async () => {
+    repo.write(`${ISSUES}/01-merged.md`, issueFile({ title: "01", status: "awaiting-merge" }));
+    repo.write(`${ISSUES}/02-dependent.md`, issueFile({ title: "02", status: "ready-for-agent", extra: blockedBy("01") }));
+    repo.commitAll("add issues");
+    branchWithWork("issue/01-merged", true);
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), gate: ["true"], log });
+
+    expect(result.issues.map((r) => r.issue.id)).toEqual(["02"]);
+    expect(statusOf(repo, "02-dependent.md")).toBe("awaiting-merge");
+  });
+
+  it("leaves an awaiting-merge Issue alone while its branch is unmerged", async () => {
+    repo.write(`${ISSUES}/01-pending.md`, issueFile({ title: "01", status: "awaiting-merge" }));
+    repo.write(`${ISSUES}/02-dependent.md`, issueFile({ title: "02", status: "ready-for-agent", extra: blockedBy("01") }));
+    repo.commitAll("add issues");
+    branchWithWork("issue/01-pending", false);
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), gate: ["true"], log });
+
+    expect(result.issues).toEqual([]);
+    expect(statusOf(repo, "01-pending.md")).toBe("awaiting-merge");
+    expect(statusOf(repo, "02-dependent.md")).toBe("ready-for-agent");
+  });
+});
+
 describe("Review Session", () => {
   let repo: TempRepo;
   let output: string[];

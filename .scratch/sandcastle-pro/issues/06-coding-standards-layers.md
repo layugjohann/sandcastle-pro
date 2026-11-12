@@ -1,6 +1,6 @@
 # 06: Coding Standards layers and Must Rules
 
-Status: ready-for-agent
+Status: done
 Blocked by: 02
 
 Spec: `.scratch/sandcastle-pro/spec.md`

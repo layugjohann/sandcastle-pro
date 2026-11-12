@@ -3,7 +3,9 @@
  * Production uses the Sandcastle adapter; tests pass a scripted fake.
  */
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export type Effort = (typeof EFFORTS)[number];
 
 export type Stage = "implementer" | "review-session";
 

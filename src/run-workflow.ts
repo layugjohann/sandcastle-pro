@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import type { Agent, AgentResult, Effort, Finding, Review } from "./agent.js";
 import { runGate, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore } from "./issue-store.js";
-import { buildImplementerPrompt, buildReviewPrompt } from "./prompt.js";
+import { buildImplementerPrompt, buildReviewPrompt, fenced } from "./prompt.js";
 
 const exec = promisify(execFile);
 
@@ -16,6 +16,7 @@ export const DEFAULTS = {
   effort: "medium" as Effort,
   implementerMaxIterations: 3,
   reviewMaxIterations: 1,
+  count: 1,
 };
 
 export interface RunOptions {
@@ -28,27 +29,53 @@ export interface RunOptions {
   targetBranch?: string;
   model?: string;
   effort?: Effort;
+  /** The most Issues this Run processes, one after another. Defaults to 1. */
+  count?: number;
   log?: (line: string) => void;
 }
 
-export type RunResult =
-  | { outcome: "no-ready-issue" }
+export type IssueResult =
   | { outcome: "awaiting-merge"; issue: Issue; branch: string; review: Review }
   | { outcome: "spec-disagreement"; issue: Issue; branch: string; review: Review }
   | { outcome: "gate-failed"; issue: Issue; branch: string; review: Review; gate: GateResult & { passed: false } };
 
-/** One Run: the next ready Issue goes through the Implementer, one Review Session, then the Gate. */
+export interface RunResult {
+  /** The Issues this Run processed, in order. Empty when none was ready. */
+  issues: IssueResult[];
+}
+
+/**
+ * One Run: up to `count` ready Issues, strictly one after another. Each goes
+ * through the Implementer, one Review Session, then the Gate. A Gate failure
+ * ends the Run, because later Issues may build on the broken one.
+ */
 export async function runWorkflow(options: RunOptions): Promise<RunResult> {
-  const { repoDir, agent } = options;
   const log = options.log ?? ((line: string) => console.log(line));
-  const store = options.store ?? createIssueStore(repoDir);
+  const store = options.store ?? createIssueStore(options.repoDir);
+  const count = options.count ?? DEFAULTS.count;
+  const context = { ...options, log, store };
 
-  const issue = await store.next();
-  if (!issue) {
-    log("No Issue is ready for an agent. Nothing to do.");
-    return { outcome: "no-ready-issue" };
+  const issues: IssueResult[] = [];
+  while (issues.length < count) {
+    const issue = await store.next();
+    if (!issue) {
+      log(`No Issue is ready for an agent. ${issues.length === 0 ? "Nothing to do." : `Processed ${issues.length} of ${count}.`}`);
+      break;
+    }
+    const result = await runIssue(issue, context);
+    issues.push(result);
+    if (result.outcome === "gate-failed") {
+      if (issues.length < count) log(`Stopping the Run: Issue ${issue.id} failed the Gate, so no further Issues are started.`);
+      break;
+    }
   }
+  return { issues };
+}
 
+type IssueContext = RunOptions & { log: (line: string) => void; store: IssueStore };
+
+async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
+  const { repoDir, agent, log, store } = options;
   const target = options.targetBranch ?? (await git(repoDir, "branch", "--show-current"));
   const { branch } = issue;
   log(`Starting Issue ${issue.id} on ${branch}`);
@@ -100,6 +127,9 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
 
   const gate = await withWorktree(repoDir, branch, (dir) => runGate(options.gate, dir));
   if (!gate.passed) {
+    // The branch is left as it is so the human can take over with full context.
+    await store.comment(issue, `**Gate failed**\n\n${fenced(gate.output.trim())}`);
+    await store.transition(issue, "ready-for-human");
     log(`Gate failed on ${branch}:\n${gate.output}`);
     log(summary(`Issue ${issue.id} did not pass the Gate.`, branch, "failed", [report]));
     return { outcome: "gate-failed", issue, branch, gate, review };

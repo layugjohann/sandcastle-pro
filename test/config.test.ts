@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runWorkflow } from "../src/index.js";
+import { loadConfig, runWorkflow } from "../src/index.js";
 import { createTempRepo, fakeAgent, issueFile, type TempRepo } from "./helpers.js";
 
 const ISSUES = ".scratch/feature/issues";
@@ -75,6 +75,7 @@ describe("Project config", () => {
     ["empty model", `{"gate": ["true"], "model": ""}`, /"model" must be a non-empty string/],
     ["zero iterations", `{"gate": ["true"], "maxIterations": {"implementer": 0}}`, /"maxIterations.implementer" must be a positive whole number, got 0/],
     ["misspelt key", `{"gate": ["true"], "modle": "x"}`, /unknown key "modle"/],
+    ["unknown sandbox", `{"gate": ["true"], "sandbox": "vm"}`, /"sandbox" must be one of native, docker, got "vm"/],
     ["misspelt limit", `{"gate": ["true"], "maxIterations": {"review": 2}}`, /unknown key "maxIterations.review"/],
   ])("names the problem when the config has %s", async (_case, text, problem) => {
     repo.write(CONFIG, text);
@@ -86,5 +87,13 @@ describe("Project config", () => {
     await expect(run).rejects.toThrow(/^sandcastle-pro\.config\.json /);
     await expect(run).rejects.toThrow(problem);
     expect(agent.calls).toEqual([]);
+  });
+
+  it("uses the native sandbox for the OS unless the config asks for Docker", async () => {
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"] }));
+    expect((await loadConfig(repo.dir)).sandbox).toBe("native");
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], sandbox: "docker" }));
+    expect((await loadConfig(repo.dir)).sandbox).toBe("docker");
   });
 });

@@ -1,11 +1,15 @@
 import { STAGE_NAMES, type Stage, type TokenUsage } from "./agent.js";
 
-/** The tokens each stage of one Issue used. A stage is absent when the Agent reported no usage for it. */
-export type IssueUsage = Partial<Record<Stage, TokenUsage>>;
+/**
+ * The tokens each stage of one Issue used in one Run. A stage is absent when the Run did not call it,
+ * as when a resumed Issue starts at the Review Session, and undefined when the Agent reported no usage.
+ */
+export type IssueUsage = Partial<Record<Stage, TokenUsage | undefined>>;
 
-/** One line: each stage's input, output, cache creation and cache read tokens, "unknown" where not reported. */
+/** One line: each called stage's input, output, cache creation and cache read tokens, "unknown" where not reported. */
 export function formatUsage(usage: IssueUsage): string {
-  const stages = (Object.keys(STAGE_NAMES) as Stage[]).map((stage) => `${STAGE_NAMES[stage]} ${formatStage(usage[stage])}`);
+  const called = (Object.keys(STAGE_NAMES) as Stage[]).filter((stage) => stage in usage);
+  const stages = called.map((stage) => `${STAGE_NAMES[stage]} ${formatStage(usage[stage])}`);
   return `Usage: ${stages.join("; ")}.`;
 }
 

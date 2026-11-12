@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach } from "vitest";
 import {
+  AgentCallError,
   DEFAULT_CONFIG,
   type Agent,
   type AgentCall,
@@ -110,6 +111,13 @@ export function fakeAgent(
     onCall?: (call: AgentCall) => void;
     /** Token usage each stage reports; "missing" reports none. Defaults to 100 in, 50 out. */
     usage?: Partial<Record<Stage, TokenUsage | "missing">>;
+    /**
+     * A fresh (not resumed) call to this stage hits the usage limit: like Sandcastle, it leaves
+     * uncommitted `wip` in a preserved worktree and returns limit-reached with `sessionId`.
+     */
+    limit?: { stage: Stage; sessionId: string; wip?: Record<string, string> };
+    /** A fresh call to this stage throws, leaving `wip` uncommitted; `sessionId` makes it resumable. */
+    fail?: { stage: Stage; sessionId?: string; wip?: Record<string, string> };
   } = {},
 ): FakeAgent {
   const calls: AgentCall[] = [];
@@ -120,6 +128,15 @@ export function fakeAgent(
       opts.onCall?.(call);
       const scripted = opts.usage?.[call.stage] ?? { inputTokens: 100, outputTokens: 50 };
       const usage = scripted === "missing" ? undefined : scripted;
+      const fresh = call.resumeSession === undefined;
+      if (opts.limit?.stage === call.stage && fresh) {
+        leaveWorkInProgress(repoDir, call.branch, opts.limit.wip ?? {});
+        return { kind: "limit-reached", sessionId: opts.limit.sessionId, usage };
+      }
+      if (opts.fail?.stage === call.stage && fresh) {
+        leaveWorkInProgress(repoDir, call.branch, opts.fail.wip ?? {});
+        throw new AgentCallError("fake agent: sandbox error", opts.fail.sessionId);
+      }
       if (call.stage === "implementer") {
         commitOnBranch(repoDir, call.branch, opts.files ?? { "feature.txt": "implemented\n" }, "fake agent: implement issue");
         return { kind: "completed", usage };
@@ -134,6 +151,14 @@ export function fakeAgent(
       };
     },
   };
+}
+
+/** Checks out `branch` in a Sandcastle-style worktree and leaves `files` there uncommitted. */
+function leaveWorkInProgress(repoDir: string, branch: string, files: Record<string, string>): void {
+  if (Object.keys(files).length === 0) return;
+  const worktree = join(repoDir, ".sandcastle", "worktrees", branch.replaceAll("/", "-"));
+  git(repoDir, "worktree", "add", "-q", worktree, branch);
+  for (const [path, content] of Object.entries(files)) writeFile(worktree, path, content);
 }
 
 function commitOnBranch(repoDir: string, branch: string, files: Record<string, string>, message: string): void {

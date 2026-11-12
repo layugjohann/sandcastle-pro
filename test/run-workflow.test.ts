@@ -622,3 +622,138 @@ describe("Coding Standards", () => {
     expect(personal).toBeLessThan(preset);
   });
 });
+
+describe("Pause and resume at the usage limit", () => {
+  let repo: TempRepo;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+
+  function header(file: string): string {
+    return repo.read(`${ISSUES}/${file}`).split(/^## Comments$/m)[0]!;
+  }
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    output = [];
+    repo.write(`${ISSUES}/01-first.md`, issueFile({ title: "01: First", status: "ready-for-agent" }));
+    repo.write(`${ISSUES}/02-second.md`, issueFile({ title: "02: Second", status: "ready-for-agent" }));
+    repo.commitAll("add issues");
+  });
+  afterEach(() => repo.cleanup());
+
+  it("pauses at the limit in the Implementer, commits the work in progress, and ends the Run even with count N", async () => {
+    const agent = fakeAgent(repo.dir, {
+      limit: { stage: "implementer", sessionId: "sess-impl-1", wip: { "half.txt": "half done\n" } },
+    });
+    const gateRan = join(repo.dir, "gate-ran");
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([`touch ${gateRan}`]), count: 2, log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["paused"]);
+    expect(agent.calls.map((c) => c.stage)).toEqual(["implementer"]);
+    expect(existsSync(gateRan)).toBe(false);
+    expect(statusOf(repo, "01-first.md")).toBe("paused");
+    expect(statusOf(repo, "02-second.md")).toBe("ready-for-agent");
+    expect(header("01-first.md")).toContain("sess-impl-1");
+    expect(header("01-first.md")).toMatch(/Implementer/);
+    expect(git(repo.dir, "show", "issue/01-first:half.txt")).toBe("half done");
+    expect(git(repo.dir, "worktree", "list")).not.toContain(".sandcastle");
+    expect(output.join("\n")).toMatch(/usage limit/i);
+  });
+
+  it("resumes a paused Implementer in its original session, then carries on to awaiting-merge", async () => {
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir, { limit: { stage: "implementer", sessionId: "sess-impl-1" } }), config: configWithGate([]), log });
+    const agent = fakeAgent(repo.dir);
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([]), log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["01", "awaiting-merge"]]);
+    expect(agent.calls.map((c) => [c.stage, c.resumeSession])).toEqual([
+      ["implementer", "sess-impl-1"],
+      ["review-session", undefined],
+    ]);
+    expect(agent.calls[0]!.prompt).toMatch(/resum/i);
+    expect(statusOf(repo, "01-first.md")).toBe("awaiting-merge");
+    expect(header("01-first.md")).not.toMatch(/Paused/);
+  });
+
+  it("resumes a pause in the Review Session in the Review Session, without calling the Implementer again", async () => {
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir, { limit: { stage: "review-session", sessionId: "sess-rev-1" } }), config: configWithGate([]), log });
+    expect(statusOf(repo, "01-first.md")).toBe("paused");
+    expect(header("01-first.md")).toContain("sess-rev-1");
+    expect(header("01-first.md")).toMatch(/Review Session/);
+    output = [];
+    const agent = fakeAgent(repo.dir);
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([]), log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
+    expect(agent.calls.map((c) => [c.stage, c.resumeSession])).toEqual([["review-session", "sess-rev-1"]]);
+    const usageLine = output.join("\n").split("Usage this Run:")[1]!;
+    expect(usageLine).toMatch(/Review Session/);
+    expect(usageLine).not.toMatch(/Implementer/);
+  });
+
+  it("resumes a paused Issue before a lower-numbered ready-for-agent Issue", async () => {
+    repo.write(
+      `${ISSUES}/02-second.md`,
+      issueFile({ title: "02: Second", status: "paused\nPaused session: s2\nPaused stage: Implementer" }),
+    );
+    repo.commitAll("pause second");
+    const agent = fakeAgent(repo.dir);
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([]), log });
+
+    expect(result.issues.map((r) => r.issue.id)).toEqual(["02"]);
+    expect(agent.calls[0]!.resumeSession).toBe("s2");
+  });
+
+  it("says so and starts a fresh Implementer when a paused Issue's pause record is unreadable", async () => {
+    repo.write(`${ISSUES}/01-first.md`, issueFile({ title: "01: First", status: "paused" }));
+    repo.commitAll("pause without a record");
+    const agent = fakeAgent(repo.dir);
+
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([]), log });
+
+    expect(agent.calls.map((c) => [c.stage, c.resumeSession])).toEqual([
+      ["implementer", undefined],
+      ["review-session", undefined],
+    ]);
+    expect(output.join("\n")).toMatch(/pause record is unreadable/);
+  });
+
+  it("prints the usage of a paused Issue in the Run's usage report", async () => {
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir, { limit: { stage: "implementer", sessionId: "s1" } }), config: configWithGate([]), log });
+
+    expect(output.join("\n")).toMatch(/Usage this Run:\nIssue 01: .*Implementer/);
+  });
+
+  it("puts the Issue back to ready-for-agent and deletes its empty branch when an Agent call fails", async () => {
+    const agent = fakeAgent(repo.dir, { fail: { stage: "implementer" } });
+
+    await expect(runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([]), log })).rejects.toThrow(/sandbox error/);
+
+    expect(statusOf(repo, "01-first.md")).toBe("ready-for-agent");
+    expect(git(repo.dir, "branch", "--list", "issue/01-first")).toBe("");
+  });
+
+  it("commits the work in progress and keeps the branch when a failed Agent call left some", async () => {
+    const agent = fakeAgent(repo.dir, { fail: { stage: "implementer", wip: { "half.txt": "half\n" } } });
+
+    await expect(runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([]), log })).rejects.toThrow();
+
+    expect(statusOf(repo, "01-first.md")).toBe("ready-for-agent");
+    expect(git(repo.dir, "show", "issue/01-first:half.txt")).toBe("half");
+    expect(git(repo.dir, "worktree", "list")).not.toContain(".sandcastle");
+  });
+
+  it("pauses the Issue when a failed Agent call left a resumable session", async () => {
+    const agent = fakeAgent(repo.dir, { fail: { stage: "review-session", sessionId: "sess-broken" } });
+
+    await expect(runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([]), log })).rejects.toThrow();
+
+    expect(statusOf(repo, "01-first.md")).toBe("paused");
+    expect(header("01-first.md")).toContain("sess-broken");
+    expect(header("01-first.md")).toMatch(/Review Session/);
+  });
+});

@@ -59,3 +59,18 @@ export type AgentResult =
 export interface Agent {
   run(call: AgentCall): Promise<AgentResult>;
 }
+
+/**
+ * Thrown by an Agent whose call failed for a reason other than the usage limit.
+ * `sessionId` is set only when that session can be resumed.
+ */
+export class AgentCallError extends Error {
+  constructor(
+    message: string,
+    readonly sessionId?: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "AgentCallError";
+  }
+}

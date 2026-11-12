@@ -53,12 +53,15 @@ function personalPath(): string {
   return join(homedir(), PERSONAL_CODING_STANDARDS);
 }
 
-/** Splits a layer into its `## Must` (or `## Must Rules`) section, as separate Must Rules, and everything else. */
+/**
+ * Splits a layer into its `## Must` (or `## Must Rules`) section, as separate Must Rules, and everything else.
+ * HTML comments are notes to the author, such as the examples in the skeleton `init` writes, and are dropped.
+ */
 function parseLayer(name: CodingStandardsLayerName, text: string): CodingStandardsLayer {
   const nonMustLines: string[] = [];
   const mustLines: string[] = [];
   let inMust = false;
-  for (const { line, heading } of classifyLines(text)) {
+  for (const { line, heading } of classifyLines(text.replace(/<!--[\s\S]*?-->/g, ""))) {
     // A Must section runs until the next heading at its own level or above.
     if (heading !== undefined && heading.level <= 2) inMust = heading.level === 2 && /^must(?: rules?)?$/i.test(heading.title);
     else if (inMust) {

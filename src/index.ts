@@ -12,3 +12,4 @@ export { runGate, type GateResult } from "./gate.js";
 export { createIssueStore, STATUSES, type BlockedIssue, type Issue, type IssueStore, type Status } from "./issue-store.js";
 export { runWorkflow, type IssueResult, type RunOptions, type RunResult } from "./run-workflow.js";
 export type { IssueUsage } from "./usage.js";
+export { initProject, type InitOptions } from "./init.js";

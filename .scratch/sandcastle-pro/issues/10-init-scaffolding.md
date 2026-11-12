@@ -14,9 +14,9 @@ Spec: `.scratch/sandcastle-pro/spec.md`
 
 It tells the user to run `claude setup-token`, and never overwrites existing files.
 
-- [ ] Non-interactive flags cover the sandbox choice and Gate commands
-- [ ] The sandbox defaults to Seatbelt on macOS and bubblewrap on Linux, and Docker is used when requested
-- [ ] All the files listed above are written
-- [ ] Existing files are left untouched, and the output reports them as skipped
-- [ ] The output tells the user to run `claude setup-token`
-- [ ] Tested end to end in a temp directory
+- [x] Non-interactive flags cover the sandbox choice and Gate commands
+- [x] The sandbox defaults to Seatbelt on macOS and bubblewrap on Linux, and Docker is used when requested
+- [x] All the files listed above are written
+- [x] Existing files are left untouched, and the output reports them as skipped
+- [x] The output tells the user to run `claude setup-token`
+- [x] Tested end to end in a temp directory

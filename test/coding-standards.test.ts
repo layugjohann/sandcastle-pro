@@ -42,6 +42,16 @@ describe("Coding Standards loader", () => {
     expect(personal!.rules).toContain("XDG-RULE");
   });
 
+  it("treats HTML comments as notes, never as rules", async () => {
+    repo.write(PROJECT, "## Naming\n\n<!-- - COMMENTED-RULE -->\n- NAMING-RULE\n\n## Must\n\n<!--\n- COMMENTED-MUST-RULE\n-->\n- MUST-RULE\n");
+
+    const [project] = await loadCodingStandards(repo.dir);
+
+    expect(project!.mustRules).toEqual(["MUST-RULE"]);
+    expect(project!.rules).toContain("NAMING-RULE");
+    expect(project!.rules).not.toContain("COMMENTED");
+  });
+
   it("accepts a ## Must Rules heading as well as ## Must", async () => {
     repo.write(PROJECT, "## Must Rules\n\n- MUST-RULE\n\n## Must rules of thumb\n\n- SHOULD-RULE\n");
 

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PERSONAL_CODING_STANDARDS, PROJECT_CODING_STANDARDS, runWorkflow } from "../src/index.js";
+import { loadCodingStandards, PERSONAL_CODING_STANDARDS, PROJECT_CODING_STANDARDS, runWorkflow } from "../src/index.js";
 import {
   configWithGate,
   createTempRepo,
@@ -506,14 +506,16 @@ describe("Coding Standards", () => {
     const agent = fakeAgent(repo.dir);
     await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log: () => {} });
 
+    // The Preset's first line stands in for the Preset layer, so the test is not tied to its wording.
+    const presetMarker = (await loadCodingStandards(repo.dir)).at(-1)!.rules.split("\n")[0]!;
     const [implementer, review] = agent.calls.map((c) => c.prompt);
-    for (const marker of ["PERSONAL-RULE", "PERSONAL-MUST", "PROJECT-MUST", "PROJECT-RULE", "Preset Coding Standards"]) {
+    for (const marker of ["PERSONAL-RULE", "PERSONAL-MUST", "PROJECT-MUST", "PROJECT-RULE", presetMarker]) {
       expect(review).toContain(marker);
       expect(implementer).not.toContain(marker);
     }
     const project = review!.indexOf("PROJECT-RULE");
     const personal = review!.indexOf("PERSONAL-RULE");
-    const preset = review!.indexOf("Preset Coding Standards");
+    const preset = review!.indexOf(presetMarker);
     expect(project).toBeLessThan(personal);
     expect(personal).toBeLessThan(preset);
   });

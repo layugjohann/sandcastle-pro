@@ -65,7 +65,7 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
   ];
   if (issue.spec) sections.push(`## Spec\n\n${issue.spec.trim()}`);
   sections.push(
-    codingStandards(context.standards),
+    codingStandardsSection(context.standards),
     `## Commits\n\n${fenced(context.commits.trim() || "(no commits)")}`,
     `## Diff\n\n${fenced(context.diff.trim() || "(empty diff)", "diff")}`,
     OUTPUT_FORMAT,
@@ -73,23 +73,26 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
   return `${sections.join("\n\n")}\n`;
 }
 
-/** The Coding Standards section: Must Rules first, as Critical, then every layer in order of precedence. */
-function codingStandards(layers: readonly CodingStandardsLayer[]): string {
+/**
+ * The Coding Standards section: every layer, highest precedence first, each with
+ * its Must Rules marked Critical, so a conflict and its winner read in one place.
+ */
+function codingStandardsSection(layers: readonly CodingStandardsLayer[]): string {
+  const order = layers.map((l) => l.name).join(", then ");
   const sections = [
     `## Coding Standards
 
-Check the change against the layers below. They are listed highest precedence first (${layers.map((l) => l.name).join(", then ")}). When two rules conflict, follow the one in the higher layer.`,
+Check the change against the layers below, listed highest precedence first (${order}). When two rules conflict, follow the one in the higher layer, even if the lower one is a Must Rule.
+
+Breaking a Must Rule is a Critical Finding: fix it. Breaking any other rule is a Non-critical Finding.`,
   ];
-  const must = layers.flatMap((layer) => layer.mustRules.map((rule) => `- (${layer.name}) ${rule}`));
-  if (must.length > 0) {
-    sections.push(
-      `### Must Rules (breaking one is a Critical Finding)\n\nUnless a higher layer overrides it, a breach of any of these is Critical: fix it.\n\n${must.join("\n")}`,
-    );
+  for (const layer of layers) {
+    const parts = [`### ${layer.name} layer`];
+    if (layer.mustRules.length > 0) {
+      parts.push(`Must Rules (Critical):\n\n${layer.mustRules.map((rule) => `- ${rule}`).join("\n")}`);
+    }
+    if (layer.rules !== "") parts.push(`Other rules (Non-critical):\n\n${fenced(layer.rules, "markdown")}`);
+    sections.push(parts.join("\n\n"));
   }
-  layers.forEach((layer, index) => {
-    if (layer.rules === "") return;
-    const precedence = index === 0 ? "highest precedence" : index === layers.length - 1 ? "lowest precedence" : "overrides the layers below";
-    sections.push(`### ${layer.name} layer (${precedence})\n\n${fenced(layer.rules, "markdown")}`);
-  });
   return sections.join("\n\n");
 }

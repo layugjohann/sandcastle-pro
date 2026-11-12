@@ -41,6 +41,12 @@ describe("Coding Standards loader", () => {
         "- Never call `fetch` directly; use the client.",
         "- Every exported function has a doc comment",
         "  explaining its contract.",
+        "- Log through the logger:",
+        "  - not `console.log`",
+        "",
+        "```sh",
+        "# a shell comment, not a heading",
+        "```",
         "",
         "### Notes",
         "",
@@ -58,6 +64,8 @@ describe("Coding Standards loader", () => {
     expect(project!.mustRules).toEqual([
       "Never call `fetch` directly; use the client.",
       "Every exported function has a doc comment explaining its contract.",
+      "Log through the logger: - not `console.log`",
+      "```sh # a shell comment, not a heading ```",
       "Still a Must Rule under a subheading.",
     ]);
     expect(project!.rules).toContain("SHOULD-RULE");

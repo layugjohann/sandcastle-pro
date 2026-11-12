@@ -47,34 +47,53 @@ export async function loadCodingStandards(repoDir: string): Promise<CodingStanda
 
 /** Splits a layer into its `## Must` section, as separate Must Rules, and everything else. */
 function parseLayer(name: CodingStandardsLayerName, text: string): CodingStandardsLayer {
-  const rest: string[] = [];
-  const must: string[] = [];
+  const nonMustLines: string[] = [];
+  const mustLines: string[] = [];
   let inMust = false;
-  for (const line of text.split(/\r?\n/)) {
-    const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+  for (const { line, heading } of classifyLines(text)) {
     // A Must section runs until the next heading at its own level or above.
-    if (heading && heading[1]!.length <= 2) inMust = heading[1] === "##" && /^must$/i.test(heading[2]!);
+    if (heading !== undefined && heading.level <= 2) inMust = heading.level === 2 && /^must$/i.test(heading.title);
     else if (inMust) {
-      must.push(line);
+      mustLines.push(line);
       continue;
     }
-    if (!inMust) rest.push(line);
+    if (!inMust) nonMustLines.push(line);
   }
-  return { name, rules: rest.join("\n").trim(), mustRules: splitRules(must) };
+  return { name, rules: nonMustLines.join("\n").trim(), mustRules: splitRules(mustLines) };
 }
 
-/** Each list item or paragraph is one rule; continuation lines join it. Subheadings are not rules. */
+/** Tags each line with its heading, if it is one. Lines inside fenced code blocks are never headings. */
+function classifyLines(text: string): { line: string; heading?: { level: number; title: string } }[] {
+  let fence: string | undefined;
+  return text.split(/\r?\n/).map((line) => {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker && (fence === undefined || (marker[0] === fence[0] && marker.length >= fence.length))) {
+      fence = fence === undefined ? marker : undefined;
+      return { line };
+    }
+    const match = fence === undefined ? /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line) : null;
+    return match ? { line, heading: { level: match[1]!.length, title: match[2]! } } : { line };
+  });
+}
+
+/**
+ * Each top-level list item or paragraph is one rule; continuation lines and nested
+ * items join it. A fenced code block stays whole. Subheadings are not rules.
+ */
 function splitRules(lines: readonly string[]): string[] {
   const rules: string[][] = [];
   let current: string[] | undefined;
+  let inFence = false;
   for (const line of lines) {
-    if (line.trim() === "" || /^#{1,6}\s/.test(line)) {
+    const isFence = /^\s*(`{3,}|~{3,})/.test(line);
+    if (!inFence && (line.trim() === "" || /^#{1,6}\s/.test(line))) {
       current = undefined;
       continue;
     }
-    const item = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    const item = inFence ? null : /^(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
     if (item || !current) rules.push((current = []));
     current.push((item ? item[1]! : line).trim());
+    if (isFence) inFence = !inFence;
   }
   return rules.map((rule) => rule.join(" "));
 }

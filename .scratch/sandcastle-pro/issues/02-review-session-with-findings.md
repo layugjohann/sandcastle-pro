@@ -1,6 +1,6 @@
 # 02: Review Session with Findings
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01
 
 Spec: `.scratch/sandcastle-pro/spec.md`

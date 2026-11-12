@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** `npx sandcastle-pro <command>`. Only wires the modules together. */
+import { createInterface, type Interface } from "node:readline";
 import { parseArgs } from "node:util";
 import { resolveAuth } from "./auth.js";
 import { loadConfig, SANDBOXES, type SandboxChoice } from "./config.js";
@@ -8,11 +9,14 @@ import { createIssueStore } from "./issue-store.js";
 import { runWorkflow } from "./run-workflow.js";
 import { createSandcastleAgent } from "./sandcastle-agent.js";
 
-const USAGE = `Usage: npx sandcastle-pro init --gate CMD [--gate CMD ...] [--sandbox native|docker]
+const USAGE = `Usage: npx sandcastle-pro init [--gate CMD ...] [--sandbox native|docker] [--non-interactive]
        npx sandcastle-pro run [--count N]
 
   init   Make this project ready for Runs. Never overwrites an existing file.
-         --gate CMD          a Gate command; repeat for each, in the order they run
+         Detects Gate commands from package scripts, Python project config and Makefile targets,
+         and asks you to confirm or edit them.
+         --gate CMD          a Gate command instead of the detected ones; repeat for each, in the order they run
+         --non-interactive   never ask: use the detected Gate commands (also the default without a terminal)
          --sandbox native    Seatbelt on macOS, bubblewrap on Linux (the default there)
          --sandbox docker    Docker, for stronger isolation (the default on other OSes)
 
@@ -44,13 +48,43 @@ async function main(argv: string[]): Promise<number> {
 }
 
 async function init(args: string[]): Promise<number> {
-  const { values } = parseArgs({ args, options: { gate: { type: "string", multiple: true }, sandbox: { type: "string" } } });
+  const { values } = parseArgs({
+    args,
+    options: { gate: { type: "string", multiple: true }, sandbox: { type: "string" }, "non-interactive": { type: "boolean" } },
+  });
   if (values.sandbox !== undefined && !SANDBOXES.includes(values.sandbox as SandboxChoice)) {
     console.error(`--sandbox must be one of ${SANDBOXES.join(", ")}, got ${JSON.stringify(values.sandbox)}.`);
     return 2;
   }
-  await initProject({ repoDir: process.cwd(), gate: values.gate ?? [], sandbox: values.sandbox as SandboxChoice | undefined });
+  const interactive = !values["non-interactive"] && process.stdin.isTTY === true;
+  const terminal = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+  try {
+    await initProject({
+      repoDir: process.cwd(),
+      gate: values.gate,
+      sandbox: values.sandbox as SandboxChoice | undefined,
+      ask: terminal && askOn(terminal),
+    });
+  } finally {
+    terminal?.close();
+  }
   return 0;
+}
+
+/** Asks on the terminal; rejects when the user closes input (Ctrl-D, Ctrl-C) instead of answering. */
+function askOn(terminal: Interface): (question: string) => Promise<string> {
+  let closed = false;
+  terminal.once("close", () => (closed = true));
+  return (question) =>
+    new Promise((resolve, reject) => {
+      if (closed) return reject(new Error("init cancelled: nothing was written."));
+      const onClose = () => reject(new Error("init cancelled: nothing was written."));
+      terminal.once("close", onClose);
+      terminal.question(question, (answer) => {
+        terminal.off("close", onClose);
+        resolve(answer);
+      });
+    });
 }
 
 main(process.argv.slice(2)).then(

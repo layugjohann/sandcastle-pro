@@ -5,15 +5,21 @@ import { API_KEY, ENV_FILE, OAUTH_TOKEN } from "./auth.js";
 import { PROJECT_CODING_STANDARDS } from "./coding-standards.js";
 import { CONFIG_FILE, DEFAULT_CONFIG, isGate, type SandboxChoice } from "./config.js";
 import { readOptional } from "./files.js";
+import { detectGate } from "./gate-detection.js";
 
 export interface InitOptions {
   repoDir: string;
-  /** Gate commands, in the order they run. */
-  gate: string[];
+  /** Gate commands, in the order they run. Detected from the project when omitted. */
+  gate?: string[];
   /** Defaults to the native sandbox for the OS, or Docker where the OS has none. */
   sandbox?: SandboxChoice;
   /** The OS Runs will use; defaults to this one. */
   platform?: NodeJS.Platform;
+  /**
+   * Asks the user a question and resolves to their answer. When given, the detected Gate commands are
+   * confirmed or edited interactively; when omitted, they are used as detected.
+   */
+  ask?: (question: string) => Promise<string>;
   log?: (line: string) => void;
 }
 
@@ -21,27 +27,34 @@ export interface InitOptions {
 const NATIVE_SANDBOXES: Partial<Record<NodeJS.Platform, string>> = { darwin: "Seatbelt", linux: "bubblewrap" };
 
 /** Makes a project ready for Runs. Never overwrites an existing file. */
-export async function initProject({ repoDir, gate, sandbox, platform = process.platform, log = console.log }: InitOptions): Promise<void> {
+export async function initProject({ repoDir, gate, sandbox, platform = process.platform, ask, log = console.log }: InitOptions): Promise<void> {
   const native = NATIVE_SANDBOXES[platform];
   sandbox ??= native ? "native" : "docker";
-  if (!isGate(gate)) {
+  if (gate !== undefined && !isGate(gate)) {
     throw new Error(`Pass at least one Gate command, and no blank ones, e.g. --gate "npm test". Got ${JSON.stringify(gate)}.`);
   }
   if (sandbox === "native" && !native) throw new Error(`No native sandbox for ${platform}. Use --sandbox docker.`);
 
-  const config = { gate, model: DEFAULT_CONFIG.model, effort: DEFAULT_CONFIG.effort, sandbox };
-  const configWritten = await writeNew(repoDir, CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, log);
+  // An existing config is kept, so there is nothing to detect or ask.
+  const configExists = existsSync(join(repoDir, CONFIG_FILE));
+  if (!configExists) {
+    gate ??= await chooseGate(await detectGate(repoDir), ask, log);
+    const config = { gate, model: DEFAULT_CONFIG.model, effort: DEFAULT_CONFIG.effort, sandbox };
+    await writeNew(repoDir, CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, log);
+  } else {
+    log(`skipped  ${CONFIG_FILE} (already exists)`);
+  }
   await writeNew(repoDir, PROJECT_CODING_STANDARDS, PROJECT_CODING_STANDARDS_SKELETON, log);
   await writeNew(repoDir, ENV_EXAMPLE_FILE, ENV_EXAMPLE, log);
   await writeNew(repoDir, ISSUE_FORMAT_DOC, ISSUE_FORMAT, log);
   await addGitIgnoreEntries(repoDir, log);
 
   log("");
-  if (configWritten) {
+  if (gate !== undefined && !configExists) {
     log(`Sandbox: ${sandbox === "native" ? `${native} (native to ${platform})` : "Docker"}`);
     log(`Gate:    ${gate.join(" && ")}`);
   } else {
-    log(`--gate and --sandbox were not applied: ${CONFIG_FILE} already exists. Edit it to change them.`);
+    log(`Kept the Gate and sandbox in the existing ${CONFIG_FILE}; edit it to change them.`);
   }
   log("");
   log("Next:");
@@ -49,6 +62,36 @@ export async function initProject({ repoDir, gate, sandbox, platform = process.p
   log(`     (see ${ENV_EXAMPLE_FILE}; set ${API_KEY} there instead to bill the API).`);
   log(`  2. Add rules for this codebase to ${PROJECT_CODING_STANDARDS}.`);
   log("  3. Write Issues under .scratch/<feature>/issues/, then run `npx sandcastle-pro run`.");
+}
+
+/**
+ * The Gate commands to write. Without `ask`, the detected ones, or an error when there are none. With
+ * `ask`, the user keeps or drops each detected command and adds their own, ending up with at least one.
+ */
+async function chooseGate(detected: string[], ask: InitOptions["ask"], log: (line: string) => void): Promise<string[]> {
+  if (!ask) {
+    if (detected.length > 0) return detected;
+    throw new Error(
+      "No Gate commands detected: no test, typecheck or lint package scripts, Python tools or Makefile targets. " +
+        'Pass them with --gate, e.g. --gate "npm test".',
+    );
+  }
+  const gate: string[] = [];
+  if (detected.length > 0) {
+    log("Detected Gate commands. A Run's change must pass each, in this order:");
+    for (const command of detected) {
+      if (!/^\s*n/i.test(await ask(`  Keep \`${command}\`? [Y/n] `))) gate.push(command);
+    }
+  } else {
+    log("No Gate commands detected. A Run's change must pass each Gate command, in order.");
+  }
+  log("Add Gate commands, one per line. Leave the line blank to finish.");
+  for (;;) {
+    const command = (await ask("  > ")).trim();
+    if (command !== "") gate.push(command);
+    else if (gate.length > 0) return gate;
+    else log("The Gate needs at least one command.");
+  }
 }
 
 /** Appends the entries `.gitignore` lacks, creating it if needed. Existing lines are never changed. */

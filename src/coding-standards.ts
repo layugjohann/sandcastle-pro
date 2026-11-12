@@ -1,7 +1,6 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { readOptional } from "./files.js";
 
 export type CodingStandardsLayerName = "Project" | "Personal" | "Preset";
 
@@ -107,8 +106,4 @@ function splitRules(lines: readonly string[]): string[] {
     if (isFence) inFence = !inFence;
   }
   return rules.map((rule) => rule.join(" "));
-}
-
-async function readOptional(path: string): Promise<string | undefined> {
-  return existsSync(path) ? readFile(path, "utf8") : undefined;
 }

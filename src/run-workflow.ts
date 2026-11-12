@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { readOptional } from "./files.js";
 import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Agent, type Finding, type Review, type Stage } from "./agent.js";
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
@@ -347,8 +347,4 @@ async function withWorktree<T>(repoDir: string, branch: string, fn: (dir: string
     await git(repoDir, "worktree", "remove", "--force", dir);
     await rm(parent, { recursive: true, force: true });
   }
-}
-
-async function readOptional(path: string): Promise<string | undefined> {
-  return existsSync(path) ? readFile(path, "utf8") : undefined;
 }

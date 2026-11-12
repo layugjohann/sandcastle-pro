@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ENV_FILE } from "./auth.js";
+import { API_KEY, ENV_FILE, OAUTH_TOKEN } from "./auth.js";
 import { PROJECT_CODING_STANDARDS } from "./coding-standards.js";
-import { CONFIG_FILE, DEFAULT_CONFIG, type SandboxChoice } from "./config.js";
+import { CONFIG_FILE, DEFAULT_CONFIG, isGate, type SandboxChoice } from "./config.js";
+import { readOptional } from "./files.js";
 
 export interface InitOptions {
   repoDir: string;
@@ -23,8 +24,7 @@ const NATIVE_SANDBOXES: Partial<Record<NodeJS.Platform, string>> = { darwin: "Se
 export async function initProject({ repoDir, gate, sandbox, platform = process.platform, log = console.log }: InitOptions): Promise<void> {
   const native = NATIVE_SANDBOXES[platform];
   sandbox ??= native ? "native" : "docker";
-  if (gate.length === 0 || gate.some((command) => command.trim() === "")) {
-    // An empty Gate would pass every change.
+  if (!isGate(gate)) {
     throw new Error(`Pass at least one Gate command, and no blank ones, e.g. --gate "npm test". Got ${JSON.stringify(gate)}.`);
   }
   if (sandbox === "native" && !native) throw new Error(`No native sandbox for ${platform}. Use --sandbox docker.`);
@@ -45,8 +45,8 @@ export async function initProject({ repoDir, gate, sandbox, platform = process.p
   }
   log("");
   log("Next:");
-  log(`  1. Run \`claude setup-token\` and put the token in ${ENV_FILE} as CLAUDE_CODE_OAUTH_TOKEN=...`);
-  log(`     (see ${ENV_EXAMPLE_FILE}; set ANTHROPIC_API_KEY there instead to bill the API).`);
+  log(`  1. Run \`claude setup-token\` and put the token in ${ENV_FILE} as ${OAUTH_TOKEN}=...`);
+  log(`     (see ${ENV_EXAMPLE_FILE}; set ${API_KEY} there instead to bill the API).`);
   log(`  2. Add rules for this codebase to ${PROJECT_CODING_STANDARDS}.`);
   log("  3. Write Issues under .scratch/<feature>/issues/, then run `npx sandcastle-pro run`.");
 }
@@ -54,7 +54,7 @@ export async function initProject({ repoDir, gate, sandbox, platform = process.p
 /** Appends the entries `.gitignore` lacks, creating it if needed. Existing lines are never changed. */
 async function addGitIgnoreEntries(repoDir: string, log: (line: string) => void): Promise<void> {
   const path = join(repoDir, ".gitignore");
-  const existing = existsSync(path) ? await readFile(path, "utf8") : undefined;
+  const existing = await readOptional(path);
   const present = new Set((existing ?? "").split(/\r?\n/).map((line) => line.trim()));
   const missing = GIT_IGNORE_ENTRIES.filter((entry) => !present.has(entry));
   if (missing.length === 0) {
@@ -87,10 +87,10 @@ const GIT_IGNORE_ENTRIES = [ENV_FILE, ".sandcastle/logs/", ".sandcastle/worktree
 const ENV_EXAMPLE = `# Copy this file to ${ENV_FILE} and fill in one credential. ${ENV_FILE} is git-ignored.
 
 # Bills your Claude subscription (Pro or Max). Create it with: claude setup-token
-CLAUDE_CODE_OAUTH_TOKEN=
+${OAUTH_TOKEN}=
 
-# Or bill the API instead. Used only when CLAUDE_CODE_OAUTH_TOKEN is empty.
-# ANTHROPIC_API_KEY=
+# Or bill the API instead. Used only when ${OAUTH_TOKEN} is empty.
+# ${API_KEY}=
 `;
 
 const ISSUE_FORMAT_DOC = "docs/agents/sandcastle-pro-issues.md";
@@ -110,10 +110,11 @@ a Run only implements and reviews them.
 ## Lines near the top
 
 - \`Status:\` the Issue's status (below). Required: an Issue without a known status is never picked.
-- \`Blocked by:\` Issue numbers that must be \`done\` first, e.g. \`Blocked by: 02, 05\`. Missing or \`None\` means unblocked.
+- \`Blocked by:\` numbers of Issues in the same \`issues/\` directory that must be \`done\` first, e.g. \`Blocked by: 02, 05\`. Missing or \`None\` means unblocked.
 - \`Spec:\` the Spec's path from the repo root, e.g. \`Spec: .scratch/<feature>/spec.md\`.
   Without it, \`spec.md\` next to the \`issues/\` directory is used.
 - \`Model:\` optional; overrides the configured model for this Issue only, e.g. \`Model: claude-sonnet-5-5\`.
+  Put it above any \`## Comments\` heading; below it, it is ignored.
 
 The rest of the file describes the work: what to build, and a checklist of acceptance criteria.
 

@@ -51,8 +51,7 @@ function parseConfig(text: string): Config {
 
   const { gate, model, effort, maxIterations, sandbox } = raw;
   if (gate === undefined) throw configError(`is missing "gate": list the Gate commands, e.g. ["npm test"].`);
-  if (!Array.isArray(gate) || gate.length === 0 || !gate.every((c) => typeof c === "string" && c.trim() !== "")) {
-    // An empty Gate would pass every change, so at least one command is required.
+  if (!isGate(gate)) {
     throw configError(`"gate" must be a non-empty list of command strings, got ${JSON.stringify(gate)}.`);
   }
   if (model !== undefined && (typeof model !== "string" || model.trim() === "")) {
@@ -89,6 +88,11 @@ function rejectUnknownKeys(object: Record<string, unknown>, known: readonly stri
   if (unknown !== undefined) {
     throw configError(`has an unknown key "${prefix}${unknown}". Known keys: ${known.map((k) => prefix + k).join(", ")}.`);
   }
+}
+
+/** At least one command, and no blank ones: an empty Gate would pass every change. */
+export function isGate(gate: unknown): gate is string[] {
+  return Array.isArray(gate) && gate.length > 0 && gate.every((c) => typeof c === "string" && c.trim() !== "");
 }
 
 export function isObject(value: unknown): value is Record<string, unknown> {

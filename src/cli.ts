@@ -10,7 +10,8 @@ import { createSandcastleAgent } from "./sandcastle-agent.js";
 const USAGE = `Usage: npx sandcastle-pro run [--count N]
 
   run    Work through the next ready Issue: Implementer, Review Session, then the Gate.
-         --count N   process up to N Issues, one after another (default 1)`;
+         --count N   process up to N Issues, one after another (default 1)
+         At the usage limit the Issue is paused and the Run stops; the next run resumes it first.`;
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;

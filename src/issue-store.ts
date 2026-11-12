@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { STAGE_NAMES, type Stage } from "./agent.js";
 
 export const STATUSES = [
   "needs-triage",
@@ -29,6 +30,15 @@ export interface Issue {
   path: string;
   /** The model from the Issue's `Model:` line, overriding the configured default for this Issue only. */
   model: string | undefined;
+  /** The status when the Issue was read. */
+  status: Status | undefined;
+  /** Where a `paused` Issue stopped, so its Run can continue that session. Undefined when not paused or unreadable. */
+  paused: PausedAt | undefined;
+}
+
+export interface PausedAt {
+  sessionId: string;
+  stage: Stage;
 }
 
 export interface BlockedIssue {
@@ -38,19 +48,25 @@ export interface BlockedIssue {
 }
 
 export interface IssueStore {
-  /** The next Issue a Run should work on, or null when none is ready. */
+  /** The next Issue a Run should work on: the lowest-numbered `paused` one, else the lowest-numbered unblocked `ready-for-agent` one, else null. */
   next(): Promise<Issue | null>;
   /** The `ready-for-agent` Issues that `next()` skips because a blocker is not `done`. */
   blocked(): Promise<BlockedIssue[]>;
   /** Every Issue in `awaiting-merge`, whose branch the human may have merged. */
   awaitingMerge(): Promise<Issue[]>;
+  /** Sets the status. Leaving `paused` drops the pause record. */
   transition(issue: Issue, status: Status): Promise<void>;
+  /** Marks the Issue `paused`, recording the session to continue and the stage it was in. */
+  pause(issue: Issue, at: PausedAt): Promise<void>;
   /** Appends text under the Issue's `## Comments` heading, creating it if needed. */
   comment(issue: Issue, text: string): Promise<void>;
 }
 
 const ISSUE_FILE = /^(\d+)-(.+)\.md$/;
 const STATUS_LINE = /^Status:[ \t]*(\S*).*$/m;
+const PAUSED_SESSION_LINE = /^Paused session:[ \t]*(.*)$/m;
+const PAUSED_STAGE_LINE = /^Paused stage:[ \t]*(.*)$/m;
+const PAUSE_RECORD = /^Paused (session|stage):.*\n?/gm;
 
 function parseStatus(text: string): Status | undefined {
   const value = STATUS_LINE.exec(text)?.[1];
@@ -76,9 +92,22 @@ function parseBlockedBy(text: string): string[] {
  * Only text above `## Comments` counts, so Gate output or Findings appended there can't change the model.
  */
 function parseModel(text: string): string | undefined {
-  const header = text.split(/^## Comments[ \t]*$/m)[0]!;
-  const value = /^Model:[ \t]*(.*)$/m.exec(header)?.[1]?.replace(/`/g, "").trim();
+  const value = /^Model:[ \t]*(.*)$/m.exec(headerOf(text))?.[1]?.replace(/`/g, "").trim();
   return value || undefined;
+}
+
+/** The pause record of a `paused` Issue, or undefined when either line is missing or unreadable. */
+function parsePausedAt(text: string): PausedAt | undefined {
+  const header = headerOf(text);
+  const sessionId = PAUSED_SESSION_LINE.exec(header)?.[1]?.replace(/`/g, "").trim();
+  const stageName = PAUSED_STAGE_LINE.exec(header)?.[1]?.trim();
+  const stage = (Object.keys(STAGE_NAMES) as Stage[]).find((s) => STAGE_NAMES[s] === stageName);
+  return sessionId && stage ? { sessionId, stage } : undefined;
+}
+
+/** The text above `## Comments`, where the Issue's own lines live. */
+function headerOf(text: string): string {
+  return text.split(/^## Comments[ \t]*$/m)[0]!;
 }
 
 interface IssueFile {
@@ -145,12 +174,16 @@ export function createIssueStore(repoDir: string): IssueStore {
       spec: await readSpec(file.path, file.text),
       path: file.path,
       model: parseModel(file.text),
+      status: file.status,
+      paused: file.status === "paused" ? parsePausedAt(file.text) : undefined,
     };
   }
 
   return {
     async next() {
       const files = await readIssues();
+      const paused = files.find((f) => f.status === "paused");
+      if (paused) return toIssue(paused);
       const ready = files.find((f) => f.status === "ready-for-agent" && unfinishedBlockers(f, files).length === 0);
       return ready ? toIssue(ready) : null;
     },
@@ -169,11 +202,13 @@ export function createIssueStore(repoDir: string): IssueStore {
     },
 
     async transition(issue, status) {
-      const text = await readFile(issue.path, "utf8");
-      const updated = STATUS_LINE.test(text)
-        ? text.replace(STATUS_LINE, `Status: ${status}`)
-        : insertAfterTitle(text, `Status: ${status}`);
-      await writeFile(issue.path, updated);
+      await writeFile(issue.path, withStatus(await readFile(issue.path, "utf8"), status));
+    },
+
+    async pause(issue, { sessionId, stage }) {
+      const text = withStatus(await readFile(issue.path, "utf8"), "paused");
+      const record = `Paused session: ${sessionId}\nPaused stage: ${STAGE_NAMES[stage]}`;
+      await writeFile(issue.path, text.replace(STATUS_LINE, (line) => `${line}\n${record}`));
     },
 
     async comment(issue, comment) {
@@ -182,6 +217,16 @@ export function createIssueStore(repoDir: string): IssueStore {
       await writeFile(issue.path, `${text}\n${comment.trim()}\n`);
     },
   };
+}
+
+/** `text` with its status set and any pause record dropped; `pause()` writes a fresh one. */
+function withStatus(text: string, status: Status): string {
+  const header = headerOf(text);
+  const rest = text.slice(header.length);
+  const cleared = header.replace(PAUSE_RECORD, "") + rest;
+  return STATUS_LINE.test(cleared)
+    ? cleared.replace(STATUS_LINE, `Status: ${status}`)
+    : insertAfterTitle(cleared, `Status: ${status}`);
 }
 
 function insertAfterTitle(text: string, line: string): string {

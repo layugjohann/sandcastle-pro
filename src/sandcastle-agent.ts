@@ -1,9 +1,14 @@
 /**
  * The production Agent: maps an Agent call onto Sandcastle's `run()`.
  * Kept thin on purpose. It has no automated tests and is checked by hand with one real Run.
+ *
+ * The usage limit: Sandcastle fails a call on any error Claude reports, and then neither captures the
+ * session to the host nor keeps it resumable. So when Claude reports the usage limit, the adapter turns
+ * that error into the completion signal: Sandcastle ends the call as a success, captures the session and
+ * preserves a dirty worktree, and the adapter returns limit-reached for the Run Workflow to pause on.
  */
 import { claudeCode, run, type AgentProvider, type IterationUsage, type SandboxProvider } from "@ai-hero/sandcastle";
-import { SEVERITIES, type Agent, type AgentCall, type AgentResult, type Finding, type Review, type Severity, type TokenUsage } from "./agent.js";
+import { AgentCallError, SEVERITIES, type Agent, type AgentCall, type AgentResult, type Finding, type Review, type Severity, type TokenUsage } from "./agent.js";
 import type { Auth } from "./auth.js";
 import { CONFIG_FILE, isObject, type SandboxChoice } from "./config.js";
 
@@ -16,40 +21,104 @@ export interface SandcastleAgentOptions {
   auth: Auth;
 }
 
+/** Whether an error Claude reported is the usage limit rather than some other failure. */
+export function isUsageLimitMessage(message: string): boolean {
+  return /usage limit|limit reached|hit your (usage )?limit/i.test(message);
+}
+
 export function createSandcastleAgent({ repoDir, sandbox, auth }: SandcastleAgentOptions): Agent {
   return {
     async run(call: AgentCall): Promise<AgentResult> {
-      const result = await run({
-        cwd: repoDir,
-        name: call.stage,
-        agent: sandboxedClaudeCode(claudeCode(call.model, { effort: call.effort, env: auth.env })),
-        sandbox: await sandboxProvider(sandbox),
-        prompt: `${call.prompt}\nWhen the work is finished, print ${COMPLETION_SIGNAL} on its own line.\n`,
-        // Sandcastle resumes a session for exactly one iteration.
-        maxIterations: call.resumeSession ? 1 : call.maxIterations,
-        resumeSession: call.resumeSession,
-        completionSignal: COMPLETION_SIGNAL,
-        // The Run Workflow has already created the Issue's branch.
-        branchStrategy: { type: "branch", branch: call.branch },
-        logging: { type: "stdout" },
-      });
+      const provider = claudeCode(call.model, { effort: call.effort, env: auth.env });
+      const watch = watchStream(sandboxedClaudeCode(provider));
+      // Read after run(): Claude reports the session id during the call.
+      const session = () => watch.sessionId ?? call.resumeSession;
+      let result;
+      try {
+        result = await run({
+          cwd: repoDir,
+          name: call.stage,
+          agent: watch.provider,
+          sandbox: await sandboxProvider(sandbox),
+          prompt: `${call.prompt}\nWhen the work is finished, print ${COMPLETION_SIGNAL} on its own line.\n`,
+          // Sandcastle resumes a session for exactly one iteration.
+          maxIterations: call.resumeSession ? 1 : call.maxIterations,
+          resumeSession: call.resumeSession,
+          completionSignal: COMPLETION_SIGNAL,
+          // The Run Workflow has already created the Issue's branch.
+          branchStrategy: { type: "branch", branch: call.branch },
+          logging: { type: "stdout" },
+        });
+      } catch (error) {
+        // Resumable only if Sandcastle captured the session to the host before failing.
+        const sessionId = session();
+        const resumable = sessionId !== undefined && (await provider.sessionStorage?.existsOnHost(repoDir, sessionId));
+        const message = error instanceof Error ? error.message : String(error);
+        throw new AgentCallError(message, resumable ? sessionId : undefined, { cause: error });
+      }
       const usage = sumUsage(result.iterations.map((i) => i.usage));
+      if (watch.limitHit) {
+        const sessionId = session();
+        if (!sessionId) throw new AgentCallError(`Claude hit the usage limit in the ${call.stage} but reported no session to resume.`);
+        return { kind: "limit-reached", sessionId, usage };
+      }
       if (call.stage === "implementer") return { kind: "completed", usage };
       return { kind: "completed", usage, review: parseReview(result.stdout) };
     },
   };
 }
 
+interface StreamWatch {
+  provider: AgentProvider;
+  /** The last session id Claude reported in this call. */
+  sessionId?: string;
+  limitHit: boolean;
+}
+
+/**
+ * Wraps the provider's stream parser for one call: remembers the session id, and turns a usage-limit
+ * error into the completion signal so Sandcastle ends the call cleanly. Other errors pass through.
+ */
+function watchStream(provider: AgentProvider): StreamWatch {
+  const watch: StreamWatch = {
+    limitHit: false,
+    provider: {
+      ...provider,
+      parseStreamLine(line) {
+        return provider.parseStreamLine(line).map((event) => {
+          if (event.type === "session_id") watch.sessionId = event.sessionId;
+          if (event.type !== "error" || !isUsageLimitMessage(event.message)) return event;
+          watch.limitHit = true;
+          return { type: "text", text: `\n${COMPLETION_SIGNAL}\n` };
+        });
+      },
+    },
+  };
+  return watch;
+}
+
 /**
  * Claude Code keeps its temp files in `/tmp/claude-<uid>`, which the native sandbox can't write to.
  * Point it at the sandbox's own private `TMPDIR` instead; the shell expands it inside the sandbox.
+ *
+ * Claude also exits non-zero after reporting an error in its stream, and Sandcastle fails on the exit code
+ * before looking at the stream. So a non-zero exit becomes 0 only when Claude reported the error in its result line;
+ * Sandcastle still fails on that error unless `watchStream` finds it is the usage limit.
  */
 function sandboxedClaudeCode(provider: AgentProvider): AgentProvider {
   return {
     ...provider,
     buildPrintCommand(options) {
       const built = provider.buildPrintCommand(options);
-      return { ...built, command: `CLAUDE_CODE_TMPDIR="$TMPDIR" ${built.command}` };
+      const command = [
+        `out=$(mktemp) && code_file=$(mktemp) || exit 1`,
+        `{ CLAUDE_CODE_TMPDIR="$TMPDIR" ${built.command}; echo $? > "$code_file"; } | tee "$out"`,
+        `code=$(cat "$code_file"); code=\${code:-1}`,
+        `if [ "$code" -ne 0 ] && grep -q '^{"type":"result".*"is_error":true' "$out"; then code=0; fi`,
+        `rm -f "$out" "$code_file"`,
+        `exit "$code"`,
+      ].join("\n");
+      return { ...built, command };
     },
   };
 }

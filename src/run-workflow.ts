@@ -4,13 +4,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { STAGE_NAMES, type Agent, type AgentResult, type Finding, type Review, type Stage } from "./agent.js";
+import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Agent, type Finding, type Review, type Stage } from "./agent.js";
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, type GateResult } from "./gate.js";
-import { createIssueStore, type Issue, type IssueStore } from "./issue-store.js";
+import { createIssueStore, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
-import { buildImplementerPrompt, buildReviewPrompt } from "./prompt.js";
+import { buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { formatUsage, type IssueUsage } from "./usage.js";
 
 const exec = promisify(execFile);
@@ -30,18 +30,20 @@ export interface RunOptions {
   log?: (line: string) => void;
 }
 
-/** What every outcome of an Issue carries. */
+/** What every outcome of an Issue carries. `usage` holds only the stages this Run called. */
 interface IssueOutcomeDetails {
   issue: Issue;
   branch: string;
-  review: Review;
   usage: IssueUsage;
 }
 
+type ReviewedIssue = IssueOutcomeDetails & { review: Review };
+
 export type IssueResult =
-  | ({ outcome: "awaiting-merge" } & IssueOutcomeDetails)
-  | ({ outcome: "spec-disagreement" } & IssueOutcomeDetails)
-  | ({ outcome: "gate-failed"; gate: GateResult & { passed: false } } & IssueOutcomeDetails);
+  | ({ outcome: "awaiting-merge" } & ReviewedIssue)
+  | ({ outcome: "spec-disagreement" } & ReviewedIssue)
+  | ({ outcome: "gate-failed"; gate: GateResult & { passed: false } } & ReviewedIssue)
+  | ({ outcome: "paused"; pausedAt: PausedAt } & IssueOutcomeDetails);
 
 export interface RunResult {
   /** The Issues this Run processed, in order. Empty when none was ready. */
@@ -50,8 +52,10 @@ export interface RunResult {
 
 /**
  * One Run: up to `count` ready Issues, strictly one after another. Each goes
- * through the Implementer, one Review Session, then the Gate. A Gate failure
- * ends the Run, because later Issues may build on the broken one.
+ * through the Implementer, one Review Session, then the Gate. A paused Issue is
+ * resumed first, in the stage it stopped in. A Gate failure ends the Run, because
+ * later Issues may build on the broken one; so does the usage limit, so the human
+ * decides when to spend the next window.
  */
 export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   const log = options.log ?? ((line: string) => console.log(line));
@@ -95,6 +99,10 @@ async function runIssues(issues: IssueResult[], count: number, context: IssueCon
       if (issues.length < count) log(`Stopping the Run: Issue ${issue.id} failed the Gate, so no further Issues are started.`);
       break;
     }
+    if (result.outcome === "paused") {
+      if (issues.length < count) log(`Stopping the Run at the usage limit, so no further Issues are started.`);
+      break;
+    }
   }
 }
 
@@ -127,41 +135,55 @@ async function isMerged(repoDir: string, branch: string, target: string): Promis
 }
 
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
-  const { repoDir, agent, log, store, config, targetBranch: target } = options;
+  const { repoDir, log, store, config, targetBranch: target } = options;
   const { branch } = issue;
-  log(`Starting Issue ${issue.id} on ${branch}`);
+  const resume = issue.paused;
+  if (resume) log(`Resuming Issue ${issue.id} in the ${STAGE_NAMES[resume.stage]} on ${branch}`);
+  else if (issue.status === "paused") log(`Issue ${issue.id} is paused but its pause record is unreadable; starting it fresh on ${branch}`);
+  else log(`Starting Issue ${issue.id} on ${branch}`);
   await store.transition(issue, "in-progress");
   await ensureBranch(repoDir, branch, target);
 
   const { effort } = config;
   const model = issue.model ?? config.model;
+  const usage: IssueUsage = {};
 
-  const implemented = await agent.run({
-    stage: "implementer",
-    prompt: buildImplementerPrompt(issue, await readOptional(join(repoDir, "GLOSSARY.md"))),
-    model,
-    effort,
-    branch,
-    maxIterations: config.maxIterations.implementer,
-  });
-  assertCompleted(implemented, "implementer");
-
-  const reviewed = await agent.run({
-    stage: "review-session",
-    prompt: buildReviewPrompt(issue, {
+  if (resume?.stage !== "review-session") {
+    const implemented = await callAgent(issue, options, {
+      stage: "implementer",
+      prompt: resume
+        ? buildResumePrompt("implementer")
+        : buildImplementerPrompt(issue, await readOptional(join(repoDir, "GLOSSARY.md"))),
+      model,
+      effort,
       branch,
-      commits: await git(repoDir, "log", "--format=%h %s", `${target}..${branch}`),
-      diff: await git(repoDir, "diff", `${target}...${branch}`),
-      // Loaded only here: the Implementer never pays for Coding Standards.
-      standards: await loadCodingStandards(repoDir),
-    }),
+      maxIterations: config.maxIterations.implementer,
+      resumeSession: resume?.sessionId,
+    });
+    usage.implementer = implemented.usage;
+    if (implemented.kind === "limit-reached") return pauseAtLimit(issue, { stage: "implementer", sessionId: implemented.sessionId }, usage, options);
+  }
+
+  const reviewSessionToResume = resume?.stage === "review-session" ? resume.sessionId : undefined;
+  const reviewed = await callAgent(issue, options, {
+    stage: "review-session",
+    prompt: reviewSessionToResume
+      ? buildResumePrompt("review-session")
+      : buildReviewPrompt(issue, {
+          branch,
+          commits: await git(repoDir, "log", "--format=%h %s", `${target}..${branch}`),
+          diff: await git(repoDir, "diff", `${target}...${branch}`),
+          // Loaded only here: the Implementer never pays for Coding Standards.
+          standards: await loadCodingStandards(repoDir),
+        }),
     model,
     effort,
     branch,
     maxIterations: config.maxIterations.reviewSession,
+    resumeSession: reviewSessionToResume,
   });
-  assertCompleted(reviewed, "review-session");
-  const usage: IssueUsage = { implementer: implemented.usage, "review-session": reviewed.usage };
+  usage["review-session"] = reviewed.usage;
+  if (reviewed.kind === "limit-reached") return pauseAtLimit(issue, { stage: "review-session", sessionId: reviewed.sessionId }, usage, options);
   // Every outcome, including a failed review, keeps its cost history with the Issue.
   await store.comment(issue, formatUsage(usage));
   const { review } = reviewed;
@@ -196,6 +218,93 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   return { outcome: "awaiting-merge", issue, branch, review, usage };
 }
 
+/**
+ * Calls the Agent. When the call throws, the Issue is not left `in-progress`: its work in progress is
+ * committed, then it is paused if the session can be resumed, or else goes back to `ready-for-agent`
+ * with an empty branch deleted. The error is then rethrown, ending the Run.
+ */
+async function callAgent(issue: Issue, options: IssueContext, call: AgentCall): Promise<AgentResult> {
+  try {
+    return await options.agent.run(call);
+  } catch (error) {
+    try {
+      await recoverFromFailure(issue, call.stage, error, options);
+    } catch (recoveryError) {
+      options.log(`Could not restore Issue ${issue.id} after the failure: ${String(recoveryError)}`);
+    }
+    throw error;
+  }
+}
+
+async function recoverFromFailure(issue: Issue, stage: Stage, error: unknown, options: IssueContext): Promise<void> {
+  const { repoDir, store, log, targetBranch } = options;
+  const { branch } = issue;
+  const stageName = STAGE_NAMES[stage];
+  const sessionId = error instanceof AgentCallError ? error.sessionId : undefined;
+  if (sessionId) {
+    await pauseIssue(issue, { stage, sessionId }, "after a failure", undefined, options);
+    log(`Issue ${issue.id} is paused: the ${stageName} failed and the next Run resumes its session.`);
+    return;
+  }
+  await commitWorkInProgress(repoDir, branch, `WIP: ${stageName} failed (sandcastle-pro)`);
+  await store.transition(issue, "ready-for-agent");
+  const deleted = await deleteBranchIfEmpty(repoDir, branch, targetBranch);
+  log(`Issue ${issue.id} is back to ready-for-agent: the ${name} failed.${deleted ? ` Deleted the empty ${branch}.` : ""}`);
+}
+
+/** Pauses the Issue at the usage limit, so the next Run continues the session. */
+async function pauseAtLimit(issue: Issue, pausedAt: PausedAt, usage: IssueUsage, options: IssueContext): Promise<IssueResult> {
+  const { branch } = issue;
+  await pauseIssue(issue, pausedAt, "at the usage limit", formatUsage(usage), options);
+  options.log(
+    `Issue ${issue.id} is paused at the usage limit in the ${STAGE_NAMES[pausedAt.stage]}. Branch: ${branch}. Run again once the usage window resets to resume it.`,
+  );
+  return { outcome: "paused", issue, branch, pausedAt, usage };
+}
+
+/** Commits the work in progress, marks the Issue `paused` with its session and stage, and says why in a comment. */
+async function pauseIssue(
+  issue: Issue,
+  pausedAt: PausedAt,
+  reason: string,
+  details: string | undefined,
+  { repoDir, store }: IssueContext,
+): Promise<void> {
+  const stageName = STAGE_NAMES[pausedAt.stage];
+  await commitWorkInProgress(repoDir, issue.branch, `WIP: paused ${reason} in the ${stageName} (sandcastle-pro)`);
+  await store.pause(issue, pausedAt);
+  const headline = `**Paused ${reason}** in the ${stageName} (session ${pausedAt.sessionId}).`;
+  await store.comment(issue, details ? `${headline}\n\n${details}` : headline);
+}
+
+/**
+ * Commits any uncommitted changes in the worktrees Sandcastle preserved for `branch`
+ * under `.sandcastle/worktrees/`, then removes them so the branch can be checked out again.
+ */
+async function commitWorkInProgress(repoDir: string, branch: string, message: string): Promise<void> {
+  const listing = await git(repoDir, "worktree", "list", "--porcelain");
+  const preserved = listing
+    .split(/\n\s*\n/)
+    .filter((entry) => entry.split("\n").includes(`branch refs/heads/${branch}`))
+    .map((entry) => /^worktree (.+)$/m.exec(entry)?.[1])
+    .filter((path): path is string => path !== undefined && path.includes("/.sandcastle/worktrees/"));
+  for (const dir of preserved) {
+    if (await git(dir, "status", "--porcelain")) {
+      await git(dir, "add", "-A");
+      await git(dir, "commit", "-q", "--no-verify", "-m", message);
+    }
+    await git(repoDir, "worktree", "remove", "--force", dir);
+  }
+}
+
+/** Deletes `branch` when it has no commits beyond `target`. Returns whether it did. */
+async function deleteBranchIfEmpty(repoDir: string, branch: string, target: string): Promise<boolean> {
+  if (!(await git(repoDir, "branch", "--list", branch))) return false;
+  if ((await git(repoDir, "rev-list", "--count", `${target}..${branch}`)) !== "0") return false;
+  await git(repoDir, "branch", "-D", branch);
+  return true;
+}
+
 /** The Findings the human must see: Non-critical ones, and any Critical one left unfixed. */
 function findingsForHuman(findings: readonly Finding[]): string | undefined {
   const sections = [];
@@ -217,15 +326,6 @@ function bullets(heading: string, items: readonly string[]): string {
 function summary(headline: string, branch: string, gate: string, sections: readonly (string | undefined)[]): string {
   const body = sections.filter((s) => s !== undefined);
   return [`${headline} Branch: ${branch}. Gate: ${gate}.`, ...(body.length > 0 ? body : ["No Findings to report."])].join("\n\n");
-}
-
-function assertCompleted(
-  result: AgentResult,
-  stage: Stage,
-): asserts result is Extract<AgentResult, { kind: "completed" }> {
-  if (result.kind === "completed") return;
-  // Pausing at the usage limit is not built yet; the Issue stays in-progress.
-  throw new Error(`${STAGE_NAMES[stage]} stopped at the usage limit (session ${result.sessionId}); pausing is not supported yet.`);
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {

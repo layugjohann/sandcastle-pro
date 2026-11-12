@@ -94,4 +94,49 @@ describe("Issue Store", () => {
 
     expect((await createIssueStore(repo.dir).next())?.model).toBe(model);
   });
+
+  describe("paused Issues", () => {
+    const path = `${ISSUES}/01-a.md`;
+    const paused = (record: string, extra?: string) =>
+      issueFile({ title: "01: A", status: record ? `paused\n${record}` : "paused", extra });
+
+    it("pause() records the session and stage, and next() reads them back", async () => {
+      repo.write(path, issueFile({ title: "01: A", status: "ready-for-agent" }));
+      const store = createIssueStore(repo.dir);
+
+      await store.pause((await store.next())!, { sessionId: "sess-1", stage: "review-session" });
+
+      expect(repo.read(path)).toMatch(/^Status: paused\nPaused session: sess-1\nPaused stage: Review Session$/m);
+      expect((await store.next())?.paused).toEqual({ sessionId: "sess-1", stage: "review-session" });
+    });
+
+    it("drops the pause record when the Issue leaves paused", async () => {
+      repo.write(path, paused("Paused session: sess-1\nPaused stage: Implementer"));
+      const store = createIssueStore(repo.dir);
+
+      await store.transition((await store.next())!, "in-progress");
+
+      expect(repo.read(path)).toMatch(/^Status: in-progress$/m);
+      expect(repo.read(path)).not.toMatch(/Paused/);
+    });
+
+    it.each([
+      ["no record", ""],
+      ["no stage", "Paused session: sess-1"],
+      ["an unknown stage", "Paused session: sess-1\nPaused stage: Gate"],
+    ])("reads a paused Issue with %s as having nothing to resume", async (_, record) => {
+      repo.write(path, paused(record));
+
+      const issue = await createIssueStore(repo.dir).next();
+
+      expect(issue?.id).toBe("01");
+      expect(issue?.paused).toBeUndefined();
+    });
+
+    it("ignores pause lines under Comments", async () => {
+      repo.write(path, paused("", "## Comments\n\nPaused session: sess-x\nPaused stage: Implementer"));
+
+      expect((await createIssueStore(repo.dir).next())?.paused).toBeUndefined();
+    });
+  });
 });

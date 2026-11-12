@@ -1,3 +1,4 @@
+import { STAGE_NAMES, type Stage } from "./agent.js";
 import type { CodingStandardsLayer } from "./coding-standards.js";
 import type { Issue } from "./issue-store.js";
 import { fenced } from "./markdown.js";
@@ -95,4 +96,13 @@ Breaking a Must Rule is a Critical Finding: fix it. Breaking any other rule is a
     sections.push(parts.join("\n\n"));
   }
   return sections.join("\n\n");
+}
+
+/** The prompt that continues a session the usage limit (or a failure) stopped part-way. */
+export function buildResumePrompt(stage: Stage): string {
+  return [
+    `This session stopped part-way through, and you are resuming it as the ${STAGE_NAMES[stage]}.`,
+    "Any uncommitted changes you had were committed to the branch as a work-in-progress commit.",
+    "Continue exactly where you left off, following the original instructions above, including how to finish.",
+  ].join("\n") + "\n";
 }

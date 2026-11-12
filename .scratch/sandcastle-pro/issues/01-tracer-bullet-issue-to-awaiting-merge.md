@@ -1,6 +1,6 @@
 # 01: Tracer bullet: one Issue runs to awaiting-merge
 
-Status: ready-for-agent
+Status: done
 Blocked by: None (can start immediately)
 
 Spec: `.scratch/sandcastle-pro/spec.md`

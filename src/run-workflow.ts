@@ -111,7 +111,6 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   await ensureBranch(repoDir, branch, target);
 
   const { effort } = config;
-  // An Issue's `Model:` line overrides the configured default for both of its stages.
   const model = issue.model ?? config.model;
 
   const implemented = await agent.run({

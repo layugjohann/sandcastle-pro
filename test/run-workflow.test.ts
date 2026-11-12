@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runWorkflow } from "../src/index.js";
-import { createTempRepo, fakeAgent, git, issueFile, withGate, type TempRepo } from "./helpers.js";
+import { createTempRepo, fakeAgent, git, issueFile, configWithGate, type TempRepo } from "./helpers.js";
 
 const ISSUES = ".scratch/feature/issues";
 
@@ -38,7 +38,7 @@ describe("Run Workflow", () => {
     const mainBefore = git(repo.dir, "rev-parse", "main");
 
     const agent = fakeAgent(repo.dir);
-    const result = await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true", "test -f feature.txt"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true", "test -f feature.txt"]), log });
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(statusOf(repo, "02-later-work.md")).toBe("awaiting-merge");
@@ -70,7 +70,7 @@ describe("Run Workflow", () => {
 
     let statusDuringRun: string | undefined;
     const agent = fakeAgent(repo.dir, { onCall: () => (statusDuringRun = statusOf(repo, "01-only.md")) });
-    await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), log });
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
 
     expect(statusDuringRun).toBe("in-progress");
   });
@@ -84,7 +84,7 @@ describe("Run Workflow", () => {
     repo.commitAll("add issues");
 
     const agent = fakeAgent(repo.dir);
-    await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), count: 2, log });
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), count: 2, log });
 
     expect(agent.calls.map((c) => [c.branch, c.stage, c.model])).toEqual([
       ["issue/01-cheap", "implementer", "claude-haiku-5-5"],
@@ -98,7 +98,7 @@ describe("Run Workflow", () => {
     repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
     repo.commitAll("add issue");
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: withGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["true"]), log });
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(statusOf(repo, "01-only.md")).toBe("awaiting-merge");
@@ -111,7 +111,7 @@ describe("Run Workflow", () => {
     await runWorkflow({
       repoDir: repo.dir,
       agent: fakeAgent(repo.dir),
-      config: withGate(["echo FIRST-OK", "echo GATE-BOOM-MARKER && false"]),
+      config: configWithGate(["echo FIRST-OK", "echo GATE-BOOM-MARKER && false"]),
       log,
     });
 
@@ -131,7 +131,7 @@ describe("Run Workflow", () => {
     await runWorkflow({
       repoDir: repo.dir,
       agent: fakeAgent(repo.dir),
-      config: withGate(["echo STEP-ONE", "echo STEP-TWO && false", `touch ${ranAfterFailure}`]),
+      config: configWithGate(["echo STEP-ONE", "echo STEP-TWO && false", `touch ${ranAfterFailure}`]),
       log,
     });
 
@@ -147,7 +147,7 @@ describe("Run Workflow", () => {
     repo.write(`${ISSUES}/02-second.md`, issueFile({ title: "02: Second", status: "ready-for-agent" }));
     repo.commitAll("add issues");
 
-    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: withGate(["true"]), log });
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["true"]), log });
 
     expect(statusOf(repo, "01-first.md")).toBe("awaiting-merge");
     expect(statusOf(repo, "02-second.md")).toBe("ready-for-agent");
@@ -168,7 +168,7 @@ describe("Run Workflow", () => {
         }
       },
     });
-    const result = await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), count: 2, log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), count: 2, log });
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge", "awaiting-merge"]);
     expect(statusOf(repo, "01-first.md")).toBe("awaiting-merge");
@@ -189,7 +189,7 @@ describe("Run Workflow", () => {
     repo.commitAll("add issues");
 
     const agent = fakeAgent(repo.dir);
-    const result = await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["false"]), count: 3, log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["false"]), count: 3, log });
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["gate-failed"]);
     expect(statusOf(repo, "01-first.md")).toBe("ready-for-human");
@@ -201,7 +201,7 @@ describe("Run Workflow", () => {
     repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
     repo.commitAll("add issue");
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: withGate(["true"]), count: 3, log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["true"]), count: 3, log });
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(output.join("\n")).toMatch(/no issue is ready/i);
@@ -212,7 +212,7 @@ describe("Run Workflow", () => {
     repo.commitAll("add issue");
 
     const agent = fakeAgent(repo.dir);
-    await expect(runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), count, log })).rejects.toThrow(/count/);
+    await expect(runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), count, log })).rejects.toThrow(/count/);
 
     expect(agent.calls).toHaveLength(0);
     expect(statusOf(repo, "01-only.md")).toBe("ready-for-agent");
@@ -224,7 +224,7 @@ describe("Run Workflow", () => {
     repo.commitAll("add issues");
 
     const agent = fakeAgent(repo.dir);
-    const result = await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
 
     expect(result.issues).toEqual([]);
     expect(agent.calls).toHaveLength(0);
@@ -234,7 +234,7 @@ describe("Run Workflow", () => {
   });
 
   it("exits cleanly when there is no .scratch directory at all", async () => {
-    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: withGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["true"]), log });
     expect(result.issues).toEqual([]);
   });
 });
@@ -259,7 +259,7 @@ describe("Blocked Issues and merge detection", () => {
     repo.write(`${ISSUES}/04-free.md`, issueFile({ title: "04", status: "ready-for-agent", extra: blockedBy("02") }));
     repo.commitAll("add issues");
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: withGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["true"]), log });
 
     expect(result.issues.map((r) => r.issue.id)).toEqual(["04"]);
     expect(statusOf(repo, "03-blocked.md")).toBe("ready-for-agent");
@@ -272,7 +272,7 @@ describe("Blocked Issues and merge detection", () => {
     repo.commitAll("add issues");
 
     const agent = fakeAgent(repo.dir);
-    const result = await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
 
     expect(result.issues).toEqual([]);
     expect(agent.calls).toHaveLength(0);
@@ -297,7 +297,7 @@ describe("Blocked Issues and merge detection", () => {
     branchWithWork("issue/01-merged", true);
 
     const agent = fakeAgent(repo.dir);
-    await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), log });
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
 
     expect(statusOf(repo, "01-merged.md")).toBe("done");
     expect(agent.calls).toHaveLength(0);
@@ -309,7 +309,7 @@ describe("Blocked Issues and merge detection", () => {
     repo.commitAll("add issues");
     branchWithWork("issue/01-merged", true);
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: withGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["true"]), log });
 
     expect(result.issues.map((r) => r.issue.id)).toEqual(["02"]);
     expect(statusOf(repo, "02-dependent.md")).toBe("awaiting-merge");
@@ -321,7 +321,7 @@ describe("Blocked Issues and merge detection", () => {
     repo.commitAll("add issues");
     branchWithWork("issue/01-pending", false);
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: withGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["true"]), log });
 
     expect(result.issues).toEqual([]);
     expect(statusOf(repo, "01-pending.md")).toBe("awaiting-merge");
@@ -353,7 +353,7 @@ describe("Review Session", () => {
       },
     });
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["test -f fix.txt"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["test -f fix.txt"]), log });
 
     expect(agent.calls.map((c) => c.stage)).toEqual(["implementer", "review-session"]);
     const review = agent.calls[1]!;
@@ -382,7 +382,7 @@ describe("Review Session", () => {
       },
     });
 
-    await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), log });
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
 
     const text = repo.read(`${ISSUES}/01-only.md`);
     const comments = text.slice(text.indexOf("## Comments"));
@@ -407,7 +407,7 @@ describe("Review Session", () => {
       review: { review: { findings: [{ severity: "non-critical", fixed: false, description: "Tidy imports" }] } },
     });
 
-    await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), log });
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
 
     const text = repo.read(`${ISSUES}/01-only.md`);
     expect(text.match(/^## Comments$/gm)).toHaveLength(1);
@@ -419,7 +419,7 @@ describe("Review Session", () => {
       review: { review: { findings: [{ severity: "non-critical", fixed: false, description: "Tidy imports" }] } },
     });
 
-    await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["false"]), log });
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["false"]), log });
 
     const printed = output.join("\n");
     expect(printed).toContain("issue/01-only");
@@ -438,7 +438,7 @@ describe("Review Session", () => {
     });
     const gateRan = join(repo.dir, "gate-ran");
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent, config: withGate([`touch ${gateRan}`]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([`touch ${gateRan}`]), log });
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["spec-disagreement"]);
     expect(existsSync(gateRan)).toBe(false);
@@ -457,7 +457,7 @@ describe("Review Session", () => {
       review: { review: { findings: [{ severity: "critical", fixed: false, description: "Race on shared cache" }] } },
     });
 
-    await runWorkflow({ repoDir: repo.dir, agent, config: withGate(["true"]), log });
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
 
     const text = repo.read(`${ISSUES}/01-only.md`);
     expect(text.slice(text.indexOf("## Comments"))).toContain("Race on shared cache");
@@ -468,7 +468,7 @@ describe("Review Session", () => {
     const agent = fakeAgent(repo.dir, { review: { noFindings: true } });
     const gateRan = join(repo.dir, "gate-ran");
 
-    await expect(runWorkflow({ repoDir: repo.dir, agent, config: withGate([`touch ${gateRan}`]), log })).rejects.toThrow(
+    await expect(runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([`touch ${gateRan}`]), log })).rejects.toThrow(
       /Review Session/,
     );
 

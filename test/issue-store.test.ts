@@ -88,6 +88,7 @@ describe("Issue Store", () => {
     ["Model: `claude-haiku-5-5`", "claude-haiku-5-5"],
     ["Model:", undefined],
     ["", undefined],
+    ["## Comments\n\nModel: claude-haiku-5-5", undefined],
   ])("reads the model from %j", async (line, model) => {
     repo.write(`${ISSUES}/01-a.md`, issueFile({ title: "01: A", status: "ready-for-agent", extra: line }));
 

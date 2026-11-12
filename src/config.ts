@@ -32,7 +32,7 @@ export async function loadConfig(repoDir: string): Promise<Config> {
 }
 
 /** Validates the text of a config file and fills in defaults. Throws an error naming the problem. */
-export function parseConfig(text: string): Config {
+function parseConfig(text: string): Config {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -44,8 +44,9 @@ export function parseConfig(text: string): Config {
 
   const { gate, model, effort, maxIterations } = raw;
   if (gate === undefined) throw configError(`is missing "gate": list the Gate commands, e.g. ["npm test"].`);
-  if (!Array.isArray(gate) || !gate.every((c) => typeof c === "string" && c.trim() !== "")) {
-    throw configError(`"gate" must be a list of non-empty command strings, got ${JSON.stringify(gate)}.`);
+  if (!Array.isArray(gate) || gate.length === 0 || !gate.every((c) => typeof c === "string" && c.trim() !== "")) {
+    // An empty Gate would pass every change, so at least one command is required.
+    throw configError(`"gate" must be a non-empty list of command strings, got ${JSON.stringify(gate)}.`);
   }
   if (model !== undefined && (typeof model !== "string" || model.trim() === "")) {
     throw configError(`"model" must be a non-empty string, got ${JSON.stringify(model)}.`);

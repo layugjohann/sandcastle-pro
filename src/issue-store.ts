@@ -71,9 +71,13 @@ function parseBlockedBy(text: string): string[] {
     .map((part) => /\d+/.exec(part)?.[0] ?? part);
 }
 
-/** The value of the `Model:` line, without backticks, or undefined when the line is missing or empty. */
+/**
+ * The value of the `Model:` line, without backticks, or undefined when the line is missing or empty.
+ * Only text above `## Comments` counts, so Gate output or Findings appended there can't change the model.
+ */
 function parseModel(text: string): string | undefined {
-  const value = /^Model:[ \t]*(.*)$/m.exec(text)?.[1]?.replace(/`/g, "").trim();
+  const header = text.split(/^## Comments[ \t]*$/m)[0]!;
+  const value = /^Model:[ \t]*(.*)$/m.exec(header)?.[1]?.replace(/`/g, "").trim();
   return value || undefined;
 }
 

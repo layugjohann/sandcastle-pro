@@ -115,6 +115,6 @@ function commitOnBranch(repoDir: string, branch: string, files: Record<string, s
 }
 
 /** A project config with the defaults and the given Gate commands. */
-export function withGate(gate: string[]): Config {
+export function configWithGate(gate: string[]): Config {
   return { ...DEFAULT_CONFIG, gate };
 }

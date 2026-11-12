@@ -68,13 +68,14 @@ describe("Project config", () => {
     ["not JSON", "{ gate: ", /not valid JSON/],
     ["not an object", "[]", /must be a JSON object/],
     ["no gate", "{}", /missing "gate"/],
-    ["gate not a list", `{"gate": "npm test"}`, /"gate" must be a list/],
-    ["empty gate command", `{"gate": ["npm test", ""]}`, /"gate" must be a list/],
-    ["unknown effort", `{"gate": [], "effort": "huge"}`, /"effort" must be one of low, medium, high, xhigh, max, got "huge"/],
-    ["empty model", `{"gate": [], "model": ""}`, /"model" must be a non-empty string/],
-    ["zero iterations", `{"gate": [], "maxIterations": {"implementer": 0}}`, /"maxIterations.implementer" must be a positive whole number, got 0/],
-    ["misspelt key", `{"gate": [], "modle": "x"}`, /unknown key "modle"/],
-    ["misspelt limit", `{"gate": [], "maxIterations": {"review": 2}}`, /unknown key "maxIterations.review"/],
+    ["gate not a list", `{"gate": "npm test"}`, /"gate" must be a non-empty list/],
+    ["empty gate command", `{"gate": ["npm test", ""]}`, /"gate" must be a non-empty list/],
+    ["no gate commands", `{"gate": []}`, /"gate" must be a non-empty list/],
+    ["unknown effort", `{"gate": ["true"], "effort": "huge"}`, /"effort" must be one of low, medium, high, xhigh, max, got "huge"/],
+    ["empty model", `{"gate": ["true"], "model": ""}`, /"model" must be a non-empty string/],
+    ["zero iterations", `{"gate": ["true"], "maxIterations": {"implementer": 0}}`, /"maxIterations.implementer" must be a positive whole number, got 0/],
+    ["misspelt key", `{"gate": ["true"], "modle": "x"}`, /unknown key "modle"/],
+    ["misspelt limit", `{"gate": ["true"], "maxIterations": {"review": 2}}`, /unknown key "maxIterations.review"/],
   ])("names the problem when the config has %s", async (_case, text, problem) => {
     repo.write(CONFIG, text);
     repo.commitAll("setup");

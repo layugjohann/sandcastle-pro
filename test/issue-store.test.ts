@@ -75,4 +75,11 @@ describe("Issue Store", () => {
 
     expect(await createIssueStore(repo.dir).next()).toBeNull();
   });
+
+  it.each(["Issue 01", "see 01", "the auth work"])("keeps an Issue blocked by %s until it is done", async (line) => {
+    repo.write(`${ISSUES}/01-a.md`, issueFile({ title: "01", status: "in-progress" }));
+    repo.write(`${ISSUES}/02-b.md`, issueFile({ title: "02", status: "ready-for-agent", extra: `Blocked by: ${line}` }));
+
+    expect(await createIssueStore(repo.dir).next()).toBeNull();
+  });
 });

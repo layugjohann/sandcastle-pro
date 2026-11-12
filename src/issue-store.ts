@@ -31,7 +31,7 @@ export interface Issue {
 
 export interface BlockedIssue {
   id: string;
-  /** The ids of its `Blocked by:` Issues that are not `done`. */
+  /** Its `Blocked by:` entries that are not `done`, as written in the Issue. */
   blockers: string[];
 }
 
@@ -55,15 +55,18 @@ function parseStatus(text: string): Status | undefined {
   return STATUSES.find((s) => s === value);
 }
 
-/** The Issue numbers on the `Blocked by:` line. A missing line or `None` means unblocked. */
-function parseBlockedBy(text: string): number[] {
+/**
+ * The blockers on the `Blocked by:` line, as written: an Issue number, or text naming no number.
+ * A missing line or `None` means unblocked; a blocker the Run can't read stays unfinished.
+ */
+function parseBlockedBy(text: string): string[] {
   const value = /^Blocked by:[ \t]*(.*)$/m.exec(text)?.[1]?.trim() ?? "";
-  if (/^none\b/i.test(value)) return [];
+  if (value === "" || /^none\b/i.test(value)) return [];
   return value
     .split(/,|\band\b/)
-    .map((part) => /^#?(\d+)\b/.exec(part.trim())?.[1])
-    .filter((n) => n !== undefined)
-    .map(Number);
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .map((part) => /\d+/.exec(part)?.[0] ?? part);
 }
 
 interface IssueFile {
@@ -72,14 +75,14 @@ interface IssueFile {
   path: string;
   text: string;
   status: Status | undefined;
-  blockedBy: number[];
+  blockedBy: string[];
 }
 
-/** The ids of `file`'s blockers that are not `done`. Blockers resolve within the same issues directory. */
+/** `file`'s blockers that are not `done`. Blockers resolve within the same issues directory. */
 function unfinishedBlockers(file: IssueFile, all: readonly IssueFile[]): string[] {
-  return file.blockedBy
-    .filter((n) => !all.some((f) => f.number === n && dirname(f.path) === dirname(file.path) && f.status === "done"))
-    .map((n) => String(n).padStart(file.id.length, "0"));
+  const isDone = (blocker: string) =>
+    all.some((f) => f.number === Number(blocker) && dirname(f.path) === dirname(file.path) && f.status === "done");
+  return file.blockedBy.filter((blocker) => !isDone(blocker));
 }
 
 /** An Issue Store over `.scratch/<feature>/issues/NN-slug.md` files. */

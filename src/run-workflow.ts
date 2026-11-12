@@ -58,6 +58,7 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
     throw new Error(`count must be a positive whole number, got ${count}.`);
   }
   const targetBranch = options.targetBranch ?? (await git(options.repoDir, "branch", "--show-current"));
+  if (!targetBranch) throw new Error("No target branch: check out a branch, or pass targetBranch.");
   const context = { ...options, targetBranch, log, store };
   await markMergedIssuesDone(context);
 
@@ -108,8 +109,7 @@ async function isMerged(repoDir: string, branch: string, target: string): Promis
 }
 
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
-  const { repoDir, agent, log, store } = options;
-  const target = options.targetBranch;
+  const { repoDir, agent, log, store, targetBranch: target } = options;
   const { branch } = issue;
   log(`Starting Issue ${issue.id} on ${branch}`);
   await store.transition(issue, "in-progress");

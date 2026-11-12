@@ -10,6 +10,13 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
+## Lifecycle of an Issue in this repo
+
+1. **Branch**: work on `issue/NN-<slug>` (the Issue's file name without `.md`), cut from an up-to-date `main`. This overrides any "commit to the current branch" instruction when the current branch is `main`.
+2. **Before the PR**: tick every acceptance checkbox the work satisfies, and leave a box open only with a `## Comments` note saying why. `npm run check` passes. Leave `Status:` unchanged.
+3. **PR**: push the branch and open a PR to `main`. CI runs `npm run check`.
+4. **After merge**: run `/land Issue NN`. It sets `Status: done` on `main`, commits `Mark Issue NN as done`, pushes `main`, and deletes the local branch.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).

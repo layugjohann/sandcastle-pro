@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues live as local markdown files under `.scratch/<feature>/`. Before implementing one, read `docs/agents/issue-tracker.md` for the branch name, the PR checklist and what happens after merge.
 
 ### Triage labels
 

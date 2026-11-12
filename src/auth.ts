@@ -4,8 +4,8 @@ import { join } from "node:path";
 /** The git-ignored env file Sandcastle reads, relative to the repo root. */
 export const ENV_FILE = ".sandcastle/.env";
 
-const OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
-const API_KEY = "ANTHROPIC_API_KEY";
+export const OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
+export const API_KEY = "ANTHROPIC_API_KEY";
 
 export interface Auth {
   method: "oauth-token" | "api-key";

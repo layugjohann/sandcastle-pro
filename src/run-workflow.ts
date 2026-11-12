@@ -175,6 +175,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
           diff: await git(repoDir, "diff", `${target}...${branch}`),
           // Loaded only here: the Implementer never pays for Coding Standards.
           standards: await loadCodingStandards(repoDir),
+          gate: config.gate,
         }),
     model,
     effort,

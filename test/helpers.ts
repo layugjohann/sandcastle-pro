@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Agent, AgentCall, AgentResult } from "../src/index.js";
+import type { Agent, AgentCall, AgentResult, Review } from "../src/index.js";
 
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -53,14 +53,22 @@ export interface FakeAgent extends Agent {
   calls: AgentCall[];
 }
 
+export interface ReviewScript {
+  /** Files the Review Session commits, e.g. to fix a Critical Finding. None by default. */
+  files?: Record<string, string>;
+  review?: Partial<Review>;
+}
+
 /**
- * A scripted Agent that stands in for Sandcastle: it checks out the requested
- * branch in its own worktree, commits a file there, and reports usage.
+ * A scripted Agent that stands in for Sandcastle. Each call checks out the
+ * requested branch in its own worktree and commits the scripted files there.
+ * The Implementer commits `files`; the Review Session follows `review`.
  */
 export function fakeAgent(
   repoDir: string,
   opts: {
     files?: Record<string, string>;
+    review?: ReviewScript;
     onCall?: (call: AgentCall) => void;
   } = {},
 ): FakeAgent {
@@ -70,21 +78,35 @@ export function fakeAgent(
     async run(call): Promise<AgentResult> {
       calls.push(call);
       opts.onCall?.(call);
-      const worktree = mkdtempSync(join(tmpdir(), "sandcastle-pro-agent-"));
-      rmSync(worktree, { recursive: true });
-      git(repoDir, "worktree", "add", "-q", worktree, call.branch);
-      try {
-        for (const [path, content] of Object.entries(opts.files ?? { "feature.txt": "implemented\n" })) {
-          const full = join(worktree, path);
-          mkdirSync(dirname(full), { recursive: true });
-          writeFileSync(full, content);
-        }
-        git(worktree, "add", "-A");
-        git(worktree, "commit", "-q", "-m", "fake agent: implement issue");
-      } finally {
-        git(repoDir, "worktree", "remove", "--force", worktree);
+      const usage = { inputTokens: 100, outputTokens: 50 };
+      if (call.stage === "implementer") {
+        commitOnBranch(repoDir, call.branch, opts.files ?? { "feature.txt": "implemented\n" }, "fake agent: implement issue");
+        return { kind: "completed", usage };
       }
-      return { kind: "completed", usage: { inputTokens: 100, outputTokens: 50 } };
+      const files = opts.review?.files ?? {};
+      if (Object.keys(files).length > 0) commitOnBranch(repoDir, call.branch, files, "fake agent: fix critical finding");
+      return {
+        kind: "completed",
+        usage,
+        review: { findings: [], specDisagreements: [], ...opts.review?.review },
+      };
     },
   };
+}
+
+function commitOnBranch(repoDir: string, branch: string, files: Record<string, string>, message: string): void {
+  const worktree = mkdtempSync(join(tmpdir(), "sandcastle-pro-agent-"));
+  rmSync(worktree, { recursive: true });
+  git(repoDir, "worktree", "add", "-q", worktree, branch);
+  try {
+    for (const [path, content] of Object.entries(files)) {
+      const full = join(worktree, path);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    }
+    git(worktree, "add", "-A");
+    git(worktree, "commit", "-q", "-m", message);
+  } finally {
+    git(repoDir, "worktree", "remove", "--force", worktree);
+  }
 }

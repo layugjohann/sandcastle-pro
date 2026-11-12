@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 /** `npx sandcastle-pro <command>`. Only wires the modules together. */
-import { createInterface, type Interface } from "node:readline";
 import { parseArgs } from "node:util";
 import { resolveAuth } from "./auth.js";
 import { loadConfig, SANDBOXES, type SandboxChoice } from "./config.js";
@@ -8,6 +7,7 @@ import { initProject } from "./init.js";
 import { createIssueStore } from "./issue-store.js";
 import { runWorkflow } from "./run-workflow.js";
 import { createSandcastleAgent } from "./sandcastle-agent.js";
+import { withTerminalPrompt } from "./terminal-prompt.js";
 
 const USAGE = `Usage: npx sandcastle-pro init [--gate CMD ...] [--sandbox native|docker] [--non-interactive]
        npx sandcastle-pro run [--count N]
@@ -56,35 +56,10 @@ async function init(args: string[]): Promise<number> {
     console.error(`--sandbox must be one of ${SANDBOXES.join(", ")}, got ${JSON.stringify(values.sandbox)}.`);
     return 2;
   }
+  const options = { repoDir: process.cwd(), gate: values.gate, sandbox: values.sandbox as SandboxChoice | undefined };
   const interactive = !values["non-interactive"] && process.stdin.isTTY === true;
-  const terminal = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
-  try {
-    await initProject({
-      repoDir: process.cwd(),
-      gate: values.gate,
-      sandbox: values.sandbox as SandboxChoice | undefined,
-      ask: terminal && askOn(terminal),
-    });
-  } finally {
-    terminal?.close();
-  }
+  await (interactive ? withTerminalPrompt((ask) => initProject({ ...options, ask })) : initProject(options));
   return 0;
-}
-
-/** Asks on the terminal; rejects when the user closes input (Ctrl-D, Ctrl-C) instead of answering. */
-function askOn(terminal: Interface): (question: string) => Promise<string> {
-  let closed = false;
-  terminal.once("close", () => (closed = true));
-  return (question) =>
-    new Promise((resolve, reject) => {
-      if (closed) return reject(new Error("init cancelled: nothing was written."));
-      const onClose = () => reject(new Error("init cancelled: nothing was written."));
-      terminal.once("close", onClose);
-      terminal.question(question, (answer) => {
-        terminal.off("close", onClose);
-        resolve(answer);
-      });
-    });
 }
 
 main(process.argv.slice(2)).then(

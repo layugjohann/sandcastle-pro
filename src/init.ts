@@ -109,17 +109,16 @@ async function addGitIgnoreEntries(repoDir: string, log: (line: string) => void)
   log(`${existing === undefined ? "created " : "updated "} .gitignore (${missing.join(", ")})`);
 }
 
-/** Writes a file that doesn't exist yet and returns true, or leaves an existing one untouched and returns false. */
-async function writeNew(repoDir: string, path: string, content: string, log: (line: string) => void): Promise<boolean> {
+/** Writes a file that doesn't exist yet, or leaves an existing one untouched. */
+async function writeNew(repoDir: string, path: string, content: string, log: (line: string) => void): Promise<void> {
   const full = join(repoDir, path);
   if (existsSync(full)) {
     log(`skipped  ${path} (already exists)`);
-    return false;
+    return;
   }
   await mkdir(dirname(full), { recursive: true });
   await writeFile(full, content);
   log(`created  ${path}`);
-  return true;
 }
 
 const ENV_EXAMPLE_FILE = ".sandcastle/.env.example";

@@ -159,12 +159,32 @@ describe("init", () => {
       ],
       ["setup.cfg sections", { "setup.cfg": "[metadata]\nname = app\n\n[mypy]\n\n[tool:pytest]\n" }, ["mypy .", "pytest"]],
       ["standalone config files", { "mypy.ini": "[mypy]\n", "ruff.toml": "", "pytest.ini": "[pytest]\n" }, ["mypy .", "ruff check .", "pytest"]],
-    ])("detects Python checks from %s", async (_, files, gate) => {
+    ])("detects Python Gate commands from %s", async (_, files, gate) => {
       for (const [path, content] of Object.entries(files)) writeFile(dir, path, content);
 
       await initProject({ repoDir: dir, log });
 
       expect((await loadConfig(dir)).gate).toEqual(gate);
+    });
+
+    it("ignores Python tools that are only mentioned, or are a prefix of another package's name", async () => {
+      writeFile(
+        dir,
+        "pyproject.toml",
+        '[project]\nname = "app"\n# We lint with ruff in CI only.\ndependencies = ["mypy-extensions>=1"]\n\n[dependency-groups]\ndev = ["pytest-cov", "pytest_mock"]\n',
+      );
+      writeFile(dir, "Makefile", "test:\n\tpython -m unittest\n");
+
+      await initProject({ repoDir: dir, log });
+
+      expect((await loadConfig(dir)).gate).toEqual(["make test"]);
+    });
+
+    it("fails with a message naming package.json when it is not valid JSON, and writes nothing", async () => {
+      writeFile(dir, "package.json", "{ scripts: ");
+
+      await expect(initProject({ repoDir: dir, log })).rejects.toThrow(/package\.json/);
+      expect(readdirSync(dir)).toEqual(["package.json"]);
     });
 
     it("detects the test, typecheck and lint Makefile targets, ignoring variables and other targets", async () => {
@@ -175,10 +195,11 @@ describe("init", () => {
       expect((await loadConfig(dir)).gate).toEqual(["make lint", "make test"]);
     });
 
-    it("combines the commands from every kind of project config, package scripts first", async () => {
+    it("combines package scripts and Python tools, adding Makefile targets only for what they don't cover", async () => {
       writeFile(dir, "package.json", JSON.stringify({ scripts: { test: "vitest run" } }));
       writeFile(dir, "pyproject.toml", "[tool.ruff]\n");
-      writeFile(dir, "makefile", "typecheck:\n\tmypy .\n");
+      // The Makefile's test and lint targets likely wrap the commands above, so only typecheck is added.
+      writeFile(dir, "makefile", "typecheck:\n\tmypy .\nlint:\n\truff check .\ntest:\n\tnpm test\n");
 
       await initProject({ repoDir: dir, log });
 

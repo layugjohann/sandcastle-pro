@@ -12,8 +12,8 @@ Spec: `.scratch/sandcastle-pro/spec.md`
 
 When rules conflict, Project wins over Personal, and Personal wins over Preset. Rules under a `## Must` heading in any layer are Must Rules: breaking one is a Critical Finding. Breaking any other rule is a Non-critical Finding. Coding Standards are loaded only into the Review Session, never into the Implementer.
 
-- [ ] The Review Session prompt includes all three layers, clearly ordered by precedence
-- [ ] A missing Personal or Project layer is skipped silently
-- [ ] Must Rules are identified and presented as Critical
-- [ ] The Implementer prompt includes no Coding Standards
-- [ ] Tests point `HOME` at a temp directory for the Personal layer
+- [x] The Review Session prompt includes all three layers, clearly ordered by precedence
+- [x] A missing Personal or Project layer is skipped silently
+- [x] Must Rules are identified and presented as Critical
+- [x] The Implementer prompt includes no Coding Standards
+- [x] Tests point `HOME` at a temp directory for the Personal layer

@@ -2,10 +2,41 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { afterEach, beforeEach } from "vitest";
 import { DEFAULT_CONFIG, type Agent, type AgentCall, type AgentResult, type Config, type Review } from "../src/index.js";
 
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+/** Writes `content` to `path` under `root`, creating parent directories. */
+export function writeFile(root: string, path: string, content: string): void {
+  const full = join(root, path);
+  mkdirSync(dirname(full), { recursive: true });
+  writeFileSync(full, content);
+}
+
+/**
+ * Points `HOME` at a fresh temp directory, and unsets `XDG_CONFIG_HOME`, around each test, so the Personal
+ * Coding Standards layer never comes from the real user. Call at the top of a test file.
+ */
+export function useTempHome(): { readonly dir: string } {
+  const original = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  const home = { dir: "" };
+  beforeEach(() => {
+    home.dir = mkdtempSync(join(tmpdir(), "sandcastle-pro-home-"));
+    process.env.HOME = home.dir;
+    // A real XDG_CONFIG_HOME would point the Personal layer outside the temp home.
+    delete process.env.XDG_CONFIG_HOME;
+  });
+  afterEach(() => {
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(home.dir, { recursive: true, force: true });
+  });
+  return home;
 }
 
 export interface TempRepo {
@@ -25,11 +56,7 @@ export function createTempRepo(): TempRepo {
   git(dir, "config", "commit.gpgsign", "false");
   const repo: TempRepo = {
     dir,
-    write(path, content) {
-      const full = join(dir, path);
-      mkdirSync(dirname(full), { recursive: true });
-      writeFileSync(full, content);
-    },
+    write: (path, content) => writeFile(dir, path, content),
     read: (path) => readFileSync(join(dir, path), "utf8"),
     commitAll(message) {
       git(dir, "add", "-A");

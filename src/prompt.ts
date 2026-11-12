@@ -1,3 +1,4 @@
+import type { CodingStandardsLayer } from "./coding-standards.js";
 import type { Issue } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 
@@ -18,6 +19,8 @@ export interface ReviewContext {
   commits: string;
   /** `git diff` of the branch against the target branch. */
   diff: string;
+  /** The Coding Standards layers, highest precedence first. */
+  standards: readonly CodingStandardsLayer[];
 }
 
 const SEVERITY_DEFINITION = `## Critical vs. Non-critical
@@ -28,8 +31,10 @@ A **Critical Finding** makes the change wrong. It is one of:
 - a security hole
 - a Gate failure (failing tests, typecheck or other configured checks)
 - data loss
+- a breach of a Must Rule (see Coding Standards)
 
 A **Non-critical Finding** makes the change worse but not wrong, such as style, naming or simplification.
+Breaking any Coding Standard that is not a Must Rule is a Non-critical Finding.
 
 Fix every Critical Finding yourself, in this pass, with commits on the current branch.
 Do not fix Non-critical Findings; report them for the human.
@@ -60,9 +65,34 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
   ];
   if (issue.spec) sections.push(`## Spec\n\n${issue.spec.trim()}`);
   sections.push(
+    codingStandardsSection(context.standards),
     `## Commits\n\n${fenced(context.commits.trim() || "(no commits)")}`,
     `## Diff\n\n${fenced(context.diff.trim() || "(empty diff)", "diff")}`,
     OUTPUT_FORMAT,
   );
   return `${sections.join("\n\n")}\n`;
+}
+
+/**
+ * The Coding Standards section: every layer, highest precedence first, each with
+ * its Must Rules marked Critical, so a conflict and its winner read in one place.
+ */
+function codingStandardsSection(layers: readonly CodingStandardsLayer[]): string {
+  const order = layers.map((l) => l.name).join(", then ");
+  const sections = [
+    `## Coding Standards
+
+Check the change against the layers below, listed highest precedence first (${order}). When two rules conflict, follow the one in the higher layer, even if the lower one is a Must Rule.
+
+Breaking a Must Rule is a Critical Finding: fix it. Breaking any other rule is a Non-critical Finding.`,
+  ];
+  for (const layer of layers) {
+    const parts = [`### ${layer.name} layer`];
+    if (layer.mustRules.length > 0) {
+      parts.push(`Must Rules (Critical):\n\n${layer.mustRules.map((rule) => `- ${rule}`).join("\n")}`);
+    }
+    if (layer.rules !== "") parts.push(`Other rules (Non-critical):\n\n${fenced(layer.rules, "markdown")}`);
+    sections.push(parts.join("\n\n"));
+  }
+  return sections.join("\n\n");
 }

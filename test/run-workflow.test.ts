@@ -1,10 +1,21 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runWorkflow } from "../src/index.js";
-import { createTempRepo, fakeAgent, git, issueFile, configWithGate, type TempRepo } from "./helpers.js";
+import { loadCodingStandards, PERSONAL_CODING_STANDARDS, PROJECT_CODING_STANDARDS, runWorkflow } from "../src/index.js";
+import {
+  configWithGate,
+  createTempRepo,
+  fakeAgent,
+  git,
+  issueFile,
+  useTempHome,
+  writeFile,
+  type TempRepo,
+} from "./helpers.js";
 
 const ISSUES = ".scratch/feature/issues";
+
+const home = useTempHome();
 
 function statusOf(repo: TempRepo, file: string): string | undefined {
   return /^Status:\s*(\S+)/m.exec(repo.read(`${ISSUES}/${file}`))?.[1];
@@ -474,5 +485,38 @@ describe("Review Session", () => {
 
     expect(existsSync(gateRan)).toBe(false);
     expect(statusOf(repo, "01-only.md")).not.toBe("awaiting-merge");
+  });
+});
+
+describe("Coding Standards", () => {
+  let repo: TempRepo;
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+  });
+  afterEach(() => repo.cleanup());
+
+  it("gives the Review Session every layer, Project first, and the Implementer none", async () => {
+    writeFile(home.dir, PERSONAL_CODING_STANDARDS, "# Mine\n\n- PERSONAL-RULE\n\n## Must\n\n- PERSONAL-MUST\n");
+    repo.write(PROJECT_CODING_STANDARDS, "# Ours\n\n## Must\n\n- PROJECT-MUST\n\n## Style\n\n- PROJECT-RULE\n");
+    repo.commitAll("add standards");
+
+    const agent = fakeAgent(repo.dir);
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log: () => {} });
+
+    // The Preset's first line stands in for the Preset layer, so the test is not tied to its wording.
+    const presetMarker = (await loadCodingStandards(repo.dir)).at(-1)!.rules.split("\n")[0]!;
+    const [implementer, review] = agent.calls.map((c) => c.prompt);
+    for (const marker of ["PERSONAL-RULE", "PERSONAL-MUST", "PROJECT-MUST", "PROJECT-RULE", presetMarker]) {
+      expect(review).toContain(marker);
+      expect(implementer).not.toContain(marker);
+    }
+    const project = review!.indexOf("PROJECT-RULE");
+    const personal = review!.indexOf("PERSONAL-RULE");
+    const preset = review!.indexOf(presetMarker);
+    expect(project).toBeLessThan(personal);
+    expect(personal).toBeLessThan(preset);
   });
 });

@@ -1,6 +1,6 @@
 # 09: Pause and resume at the usage limit
 
-Status: ready-for-agent
+Status: done
 Blocked by: 02, 08
 
 Spec: `.scratch/sandcastle-pro/spec.md`

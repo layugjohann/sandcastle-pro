@@ -1,4 +1,5 @@
 import type { Issue } from "./issue-store.js";
+import { fenced } from "./markdown.js";
 
 export function buildImplementerPrompt(issue: Issue, glossary: string | undefined): string {
   const sections = [
@@ -64,11 +65,4 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
     OUTPUT_FORMAT,
   );
   return `${sections.join("\n\n")}\n`;
-}
-
-/** Fences `content` with more backticks than any run inside it, so a diff can't close its own fence. */
-function fenced(content: string, lang = ""): string {
-  const longest = Math.max(0, ...(content.match(/`+/g) ?? []).map((run) => run.length));
-  const fence = "`".repeat(Math.max(3, longest + 1));
-  return `${fence}${lang}\n${content}\n${fence}`;
 }

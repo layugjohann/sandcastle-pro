@@ -40,7 +40,7 @@ describe("Run Workflow", () => {
     const agent = fakeAgent(repo.dir);
     const result = await runWorkflow({ repoDir: repo.dir, agent, gate: ["true", "test -f feature.txt"], log });
 
-    expect(result.outcome).toBe("awaiting-merge");
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(statusOf(repo, "02-later-work.md")).toBe("awaiting-merge");
     expect(statusOf(repo, "05-other.md")).toBe("ready-for-agent");
     expect(statusOf(repo, "01-first-slice.md")).toBe("needs-info");
@@ -81,23 +81,122 @@ describe("Run Workflow", () => {
 
     const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), gate: ["true"], log });
 
-    expect(result.outcome).toBe("awaiting-merge");
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(statusOf(repo, "01-only.md")).toBe("awaiting-merge");
   });
 
-  it("does not move the Issue to awaiting-merge when the Gate fails", async () => {
+  it("moves an Issue that fails the Gate to ready-for-human with the output in its comments, keeping its branch", async () => {
     repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
     repo.commitAll("add issue");
 
-    const result = await runWorkflow({
+    await runWorkflow({
       repoDir: repo.dir,
       agent: fakeAgent(repo.dir),
-      gate: ["true", "echo boom && false"],
+      gate: ["echo FIRST-OK", "echo GATE-BOOM-MARKER && false"],
       log,
     });
 
-    expect(result.outcome).toBe("gate-failed");
-    expect(statusOf(repo, "01-only.md")).not.toBe("awaiting-merge");
+    expect(statusOf(repo, "01-only.md")).toBe("ready-for-human");
+    const text = repo.read(`${ISSUES}/01-only.md`);
+    const comments = text.slice(text.indexOf("## Comments"));
+    expect(comments).toContain("FIRST-OK");
+    expect(comments).toContain("GATE-BOOM-MARKER");
+    expect(git(repo.dir, "log", "--format=%s", "main..issue/01-only")).toBe("fake agent: implement issue");
+  });
+
+  it("runs the Gate commands in order and stops at the first failure", async () => {
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+    const ranAfterFailure = join(repo.dir, "ran-after-failure");
+
+    await runWorkflow({
+      repoDir: repo.dir,
+      agent: fakeAgent(repo.dir),
+      gate: ["echo STEP-ONE", "echo STEP-TWO && false", `touch ${ranAfterFailure}`],
+      log,
+    });
+
+    expect(existsSync(ranAfterFailure)).toBe(false);
+    const text = repo.read(`${ISSUES}/01-only.md`);
+    const comments = text.slice(text.indexOf("## Comments"));
+    expect(comments.indexOf("STEP-ONE")).toBeGreaterThan(-1);
+    expect(comments.indexOf("STEP-ONE")).toBeLessThan(comments.indexOf("STEP-TWO"));
+  });
+
+  it("processes exactly one Issue by default", async () => {
+    repo.write(`${ISSUES}/01-first.md`, issueFile({ title: "01: First", status: "ready-for-agent" }));
+    repo.write(`${ISSUES}/02-second.md`, issueFile({ title: "02: Second", status: "ready-for-agent" }));
+    repo.commitAll("add issues");
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), gate: ["true"], log });
+
+    expect(statusOf(repo, "01-first.md")).toBe("awaiting-merge");
+    expect(statusOf(repo, "02-second.md")).toBe("ready-for-agent");
+  });
+
+  it("processes up to N Issues one after another with count N", async () => {
+    repo.write(`${ISSUES}/01-first.md`, issueFile({ title: "01: First", status: "ready-for-agent" }));
+    repo.write(`${ISSUES}/02-second.md`, issueFile({ title: "02: Second", status: "ready-for-agent" }));
+    repo.write(`${ISSUES}/03-third.md`, issueFile({ title: "03: Third", status: "ready-for-agent" }));
+    repo.commitAll("add issues");
+
+    // Sequential: each Issue is already finished when the next one starts.
+    const statusesAtSecondStart: (string | undefined)[] = [];
+    const agent = fakeAgent(repo.dir, {
+      onCall: (call) => {
+        if (call.stage === "implementer" && call.branch === "issue/02-second") {
+          statusesAtSecondStart.push(statusOf(repo, "01-first.md"));
+        }
+      },
+    });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, gate: ["true"], count: 2, log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge", "awaiting-merge"]);
+    expect(statusOf(repo, "01-first.md")).toBe("awaiting-merge");
+    expect(statusOf(repo, "02-second.md")).toBe("awaiting-merge");
+    expect(statusOf(repo, "03-third.md")).toBe("ready-for-agent");
+    expect(statusesAtSecondStart).toEqual(["awaiting-merge"]);
+    expect(agent.calls.map((c) => `${c.stage} ${c.branch}`)).toEqual([
+      "implementer issue/01-first",
+      "review-session issue/01-first",
+      "implementer issue/02-second",
+      "review-session issue/02-second",
+    ]);
+  });
+
+  it("stops before the next Issue when the Gate fails, even with count N", async () => {
+    repo.write(`${ISSUES}/01-first.md`, issueFile({ title: "01: First", status: "ready-for-agent" }));
+    repo.write(`${ISSUES}/02-second.md`, issueFile({ title: "02: Second", status: "ready-for-agent" }));
+    repo.commitAll("add issues");
+
+    const agent = fakeAgent(repo.dir);
+    const result = await runWorkflow({ repoDir: repo.dir, agent, gate: ["false"], count: 3, log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["gate-failed"]);
+    expect(statusOf(repo, "01-first.md")).toBe("ready-for-human");
+    expect(statusOf(repo, "02-second.md")).toBe("ready-for-agent");
+    expect(git(repo.dir, "branch", "--list", "issue/02-second")).toBe("");
+  });
+
+  it("stops early when fewer than N Issues are ready", async () => {
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), gate: ["true"], count: 3, log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
+    expect(output.join("\n")).toMatch(/no issue is ready/i);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])("rejects count %s before touching any Issue", async (count) => {
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+
+    const agent = fakeAgent(repo.dir);
+    await expect(runWorkflow({ repoDir: repo.dir, agent, gate: ["true"], count, log })).rejects.toThrow(/count/);
+
+    expect(agent.calls).toHaveLength(0);
+    expect(statusOf(repo, "01-only.md")).toBe("ready-for-agent");
   });
 
   it("exits cleanly with a message and changes nothing when no Issue is ready", async () => {
@@ -108,7 +207,7 @@ describe("Run Workflow", () => {
     const agent = fakeAgent(repo.dir);
     const result = await runWorkflow({ repoDir: repo.dir, agent, gate: ["true"], log });
 
-    expect(result.outcome).toBe("no-ready-issue");
+    expect(result.issues).toEqual([]);
     expect(agent.calls).toHaveLength(0);
     expect(output.join("\n")).toMatch(/no issue is ready/i);
     expect(git(repo.dir, "status", "--porcelain")).toBe("");
@@ -117,7 +216,7 @@ describe("Run Workflow", () => {
 
   it("exits cleanly when there is no .scratch directory at all", async () => {
     const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), gate: ["true"], log });
-    expect(result.outcome).toBe("no-ready-issue");
+    expect(result.issues).toEqual([]);
   });
 });
 
@@ -154,7 +253,7 @@ describe("Review Session", () => {
     expect(review.prompt).toContain("IMPLEMENTED-CONTENT-MARKER");
     expect(review.prompt).toContain("fake agent: implement issue");
 
-    expect(result.outcome).toBe("awaiting-merge");
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(git(repo.dir, "log", "--format=%s", "main..issue/01-only").split("\n")).toEqual([
       "fake agent: fix critical finding",
       "fake agent: implement issue",
@@ -232,7 +331,7 @@ describe("Review Session", () => {
 
     const result = await runWorkflow({ repoDir: repo.dir, agent, gate: [`touch ${gateRan}`], log });
 
-    expect(result.outcome).toBe("spec-disagreement");
+    expect(result.issues.map((r) => r.outcome)).toEqual(["spec-disagreement"]);
     expect(existsSync(gateRan)).toBe(false);
     expect(statusOf(repo, "01-only.md")).toBe("needs-info");
     const text = repo.read(`${ISSUES}/01-only.md`);

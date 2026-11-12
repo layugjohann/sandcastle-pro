@@ -58,4 +58,28 @@ describe("Issue Store", () => {
     expect(repo.read(`${ISSUES}/01-a.md`)).toMatch(/^Status: in-progress$/m);
     expect(repo.read(`${ISSUES}/01-a.md`)).toContain("Body");
   });
+
+  it.each([
+    ["no Blocked by line", "Do the thing."],
+    ["Blocked by: None", "Blocked by: None - can start immediately"],
+  ])("treats an Issue with %s as unblocked", async (_label, extra) => {
+    repo.write(`${ISSUES}/01-a.md`, issueFile({ title: "01: A", status: "ready-for-agent", extra }));
+
+    expect((await createIssueStore(repo.dir).next())?.id).toBe("01");
+  });
+
+  it("reads blockers listed with prose after the numbers", async () => {
+    repo.write(`${ISSUES}/01-a.md`, issueFile({ title: "01", status: "done" }));
+    repo.write(`${ISSUES}/02-b.md`, issueFile({ title: "02", status: "in-progress" }));
+    repo.write(`${ISSUES}/03-c.md`, issueFile({ title: "03", status: "ready-for-agent", extra: "Blocked by: 01 (tracer) and #02" }));
+
+    expect(await createIssueStore(repo.dir).next()).toBeNull();
+  });
+
+  it.each(["Issue 01", "see 01", "the auth work"])("keeps an Issue blocked by %s until it is done", async (line) => {
+    repo.write(`${ISSUES}/01-a.md`, issueFile({ title: "01", status: "in-progress" }));
+    repo.write(`${ISSUES}/02-b.md`, issueFile({ title: "02", status: "ready-for-agent", extra: `Blocked by: ${line}` }));
+
+    expect(await createIssueStore(repo.dir).next()).toBeNull();
+  });
 });

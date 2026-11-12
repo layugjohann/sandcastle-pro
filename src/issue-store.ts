@@ -29,9 +29,19 @@ export interface Issue {
   path: string;
 }
 
+export interface BlockedIssue {
+  id: string;
+  /** Its `Blocked by:` entries that are not `done`, as written in the Issue. */
+  blockers: string[];
+}
+
 export interface IssueStore {
   /** The next Issue a Run should work on, or null when none is ready. */
   next(): Promise<Issue | null>;
+  /** The `ready-for-agent` Issues that `next()` skips because a blocker is not `done`. */
+  blocked(): Promise<BlockedIssue[]>;
+  /** Every Issue in `awaiting-merge`, whose branch the human may have merged. */
+  awaitingMerge(): Promise<Issue[]>;
   transition(issue: Issue, status: Status): Promise<void>;
   /** Appends text under the Issue's `## Comments` heading, creating it if needed. */
   comment(issue: Issue, text: string): Promise<void>;
@@ -45,13 +55,43 @@ function parseStatus(text: string): Status | undefined {
   return STATUSES.find((s) => s === value);
 }
 
+/**
+ * The blockers on the `Blocked by:` line, as written: an Issue number, or text naming no number.
+ * A missing line or `None` means unblocked; a blocker the Run can't read stays unfinished.
+ */
+function parseBlockedBy(text: string): string[] {
+  const value = /^Blocked by:[ \t]*(.*)$/m.exec(text)?.[1]?.trim() ?? "";
+  if (value === "" || /^none\b/i.test(value)) return [];
+  return value
+    .split(/,|\band\b/)
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .map((part) => /\d+/.exec(part)?.[0] ?? part);
+}
+
+interface IssueFile {
+  id: string;
+  number: number;
+  path: string;
+  text: string;
+  status: Status | undefined;
+  blockedBy: string[];
+}
+
+/** `file`'s blockers that are not `done`. Blockers resolve within the same issues directory. */
+function unfinishedBlockers(file: IssueFile, all: readonly IssueFile[]): string[] {
+  const isDone = (blocker: string) =>
+    all.some((f) => f.number === Number(blocker) && dirname(f.path) === dirname(file.path) && f.status === "done");
+  return file.blockedBy.filter((blocker) => !isDone(blocker));
+}
+
 /** An Issue Store over `.scratch/<feature>/issues/NN-slug.md` files. */
 export function createIssueStore(repoDir: string): IssueStore {
   const scratch = join(repoDir, ".scratch");
 
-  async function listIssueFiles(): Promise<{ id: string; number: number; slug: string; path: string }[]> {
+  async function listIssueFiles(): Promise<{ id: string; number: number; path: string }[]> {
     if (!existsSync(scratch)) return [];
-    const found = [];
+    const found: { id: string; number: number; path: string }[] = [];
     for (const feature of await readdir(scratch, { withFileTypes: true })) {
       if (!feature.isDirectory()) continue;
       const issuesDir = join(scratch, feature.name, "issues");
@@ -59,7 +99,7 @@ export function createIssueStore(repoDir: string): IssueStore {
       for (const name of await readdir(issuesDir)) {
         const match = ISSUE_FILE.exec(name);
         if (!match) continue;
-        found.push({ id: match[1]!, number: Number(match[1]), slug: match[2]!, path: join(issuesDir, name) });
+        found.push({ id: match[1]!, number: Number(match[1]), path: join(issuesDir, name) });
       }
     }
     return found.sort((a, b) => a.number - b.number || a.path.localeCompare(b.path));
@@ -76,20 +116,43 @@ export function createIssueStore(repoDir: string): IssueStore {
     return undefined;
   }
 
+  async function readIssues(): Promise<IssueFile[]> {
+    const files = [];
+    for (const file of await listIssueFiles()) {
+      const text = await readFile(file.path, "utf8");
+      files.push({ ...file, text, status: parseStatus(text), blockedBy: parseBlockedBy(text) });
+    }
+    return files;
+  }
+
+  async function toIssue(file: IssueFile): Promise<Issue> {
+    return {
+      id: file.id,
+      branch: `issue/${basename(file.path, ".md")}`,
+      text: file.text,
+      spec: await readSpec(file.path, file.text),
+      path: file.path,
+    };
+  }
+
   return {
     async next() {
-      for (const file of await listIssueFiles()) {
-        const text = await readFile(file.path, "utf8");
-        if (parseStatus(text) !== "ready-for-agent") continue;
-        return {
-          id: file.id,
-          branch: `issue/${basename(file.path, ".md")}`,
-          text,
-          spec: await readSpec(file.path, text),
-          path: file.path,
-        };
-      }
-      return null;
+      const files = await readIssues();
+      const ready = files.find((f) => f.status === "ready-for-agent" && unfinishedBlockers(f, files).length === 0);
+      return ready ? toIssue(ready) : null;
+    },
+
+    async blocked() {
+      const files = await readIssues();
+      return files
+        .filter((f) => f.status === "ready-for-agent")
+        .map((f) => ({ id: f.id, blockers: unfinishedBlockers(f, files) }))
+        .filter((b) => b.blockers.length > 0);
+    },
+
+    async awaitingMerge() {
+      const files = (await readIssues()).filter((f) => f.status === "awaiting-merge");
+      return Promise.all(files.map(toIssue));
     },
 
     async transition(issue, status) {

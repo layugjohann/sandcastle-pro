@@ -1,6 +1,6 @@
 # 05: Model and effort config, plus per-Issue Model
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01
 
 Spec: `.scratch/sandcastle-pro/spec.md`

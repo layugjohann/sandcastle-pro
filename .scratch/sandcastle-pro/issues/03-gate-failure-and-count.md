@@ -1,6 +1,6 @@
 # 03: Gate failure and --count N
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01
 
 Spec: `.scratch/sandcastle-pro/spec.md`

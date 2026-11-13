@@ -192,23 +192,39 @@ function commitOnBranch(repoDir: string, branch: string, files: Record<string, s
 
 export interface FakePublisher extends Publisher {
   published: PullRequestRequest[];
+  /** Every branch pushed, by `publish` or `push`, in order. */
+  pushes: string[];
   stateLookups: string[];
 }
 
 /**
- * A scripted Publisher that never pushes or calls `gh`. Each published Pull Request gets the next number;
- * `fail` makes publishing throw. `states` maps a URL to the state GitHub reports; a URL not in it makes the lookup throw.
+ * A scripted Publisher that never calls `gh`, and pushes for real only when `pushFrom` names a repo with an `origin`.
+ * Each published Pull Request gets the next number; `fail` makes publishing throw, and `failPush` makes `push` throw.
+ * `states` maps a URL to the state GitHub reports; a URL not in it makes the lookup throw.
  */
-export function fakePublisher(opts: { fail?: string; states?: Record<string, PullRequestState> } = {}): FakePublisher {
+export function fakePublisher(
+  opts: { fail?: string; failPush?: string; pushFrom?: string; states?: Record<string, PullRequestState> } = {},
+): FakePublisher {
   const published: PullRequestRequest[] = [];
+  const pushes: string[] = [];
   const stateLookups: string[] = [];
+  const pushBranch = (branch: string) => {
+    if (opts.pushFrom) git(opts.pushFrom, "push", "-q", "origin", branch);
+    pushes.push(branch);
+  };
   return {
     published,
+    pushes,
     stateLookups,
     async publish(request) {
       if (opts.fail) throw new Error(opts.fail);
+      pushBranch(request.branch);
       published.push(request);
       return { url: `https://github.com/owner/repo/pull/${published.length}` };
+    },
+    async push(branch) {
+      if (opts.failPush) throw new Error(opts.failPush);
+      pushBranch(branch);
     },
     async state(url) {
       stateLookups.push(url);

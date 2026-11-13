@@ -1,7 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runWorkflow, type Config } from "../src/index.js";
+import { createIssueStore, runWorkflow, type Config, type Issue } from "../src/index.js";
 import { configWithGate, createTempRepo, fakeAgent, fakePublisher, git, issueFile, useTempHome, type TempRepo } from "./helpers.js";
 
 const ISSUES = ".scratch/feature/issues";
@@ -188,7 +189,13 @@ describe("Publishing a Pull Request", () => {
 
     await runWorkflow({ repoDir: repo.dir, agent, publisher, config: withPullRequests(["true"]), log });
 
-    expect(git(repo.dir, "log", "--format=%s", "main..issue/01-first")).toBe("fake agent: implement issue");
+    // Only the host's Issue file commits follow the commit that passed the Gate.
+    expect(git(repo.dir, "log", "--format=%s", "main..issue/01-first").split("\n")).toEqual([
+      "Record Issue 01's Run comments",
+      "Record Issue 01's Run comments",
+      "fake agent: implement issue",
+    ]);
+    expect(git(repo.dir, "ls-tree", "--name-only", "issue/01-first")).not.toContain("sneaky.txt");
     expect(output.join("\n")).toMatch(/Warning: The body writer changed issue\/01-first/);
     expect(publisher.published).toHaveLength(1);
   });
@@ -313,5 +320,213 @@ describe("Merge detection through the Pull Request", () => {
 
     expect(publisher.stateLookups).toEqual([]);
     expect(statusOf("01-local.md")).toBe("done");
+  });
+
+  it("logs a warning naming the Issue and its URL when the Pull Request was closed without being merged", async () => {
+    awaitingWithPullRequest("01-closed.md", "01: Closed");
+    repo.commitAll("add issue");
+
+    await runWorkflow({
+      repoDir: repo.dir,
+      agent: fakeAgent(repo.dir),
+      publisher: fakePublisher({ states: { [URL]: "CLOSED" } }),
+      config: configWithGate(["true"]),
+      log,
+    });
+
+    expect(statusOf("01-closed.md")).toBe("awaiting-merge");
+    expect(output.join("\n")).toMatch(/Warning: Issue 01's Pull Request https:\/\/github\.com\/owner\/repo\/pull\/7 was closed without being merged/);
+  });
+});
+
+describe("The Issue file on the Pull Request", () => {
+  let repo: TempRepo;
+  let origin: string;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const FILE = `${ISSUES}/01-first.md`;
+  const URL = "https://github.com/owner/repo/pull/1";
+  const config = withPullRequests(["true"]);
+  const statusOf = () => /^Status:\s*(\S+)/m.exec(repo.read(FILE))?.[1];
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    output = [];
+    origin = mkdtempSync(join(tmpdir(), "sandcastle-pro-origin-"));
+    git(origin, "init", "-q", "--bare", "-b", "main");
+    git(repo.dir, "remote", "add", "origin", origin);
+    repo.write(".scratch/feature/spec.md", "# Spec: feature\n\nSpec body.\n");
+    repo.write(FILE, issueFile({ title: "01: First slice", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+    git(repo.dir, "push", "-q", "-u", "origin", "main");
+  });
+  afterEach(() => {
+    repo.cleanup();
+    rmSync(origin, { recursive: true, force: true });
+  });
+
+  /** Merges the Issue's branch into `main` on `origin`, as the merge button would. */
+  function mergeOnOrigin(): void {
+    const clone = mkdtempSync(join(tmpdir(), "sandcastle-pro-clone-"));
+    try {
+      git(clone, "clone", "-q", origin, ".");
+      git(clone, "config", "user.email", "test@example.com");
+      git(clone, "config", "user.name", "Test");
+      git(clone, "config", "commit.gpgsign", "false");
+      git(clone, "merge", "-q", "--no-ff", "-m", "Merge pull request #1", "origin/issue/01-first");
+      git(clone, "push", "-q", "origin", "main");
+    } finally {
+      rmSync(clone, { recursive: true, force: true });
+    }
+  }
+
+  async function publishFirst(): Promise<void> {
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher: fakePublisher({ pushFrom: repo.dir }), config, log });
+  }
+
+  async function runAfterMerge(): Promise<void> {
+    output = [];
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher: fakePublisher({ states: { [URL]: "MERGED" } }), config, log });
+  }
+
+  it("commits the Issue file with its Run comments and Pull Request line onto the pushed branch", async () => {
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config, log });
+
+    expect(publisher.pushes).toEqual(["issue/01-first", "issue/01-first"]);
+    expect(git(repo.dir, "log", "--format=%s", "main..issue/01-first").split("\n")).toEqual([
+      "Record Issue 01's Run comments",
+      "Record Issue 01's Run comments",
+      "fake agent: implement issue",
+    ]);
+    // The commit the Pull Request opens with already has the comments up to the Gate.
+    expect(git(repo.dir, "show", `issue/01-first~1:${FILE}`)).toMatch(/Usage: Implementer[\s\S]*\*\*Gate passed\*\*/);
+    const branchFile = git(repo.dir, "show", `issue/01-first:${FILE}`);
+    expect(branchFile).toMatch(/^Status: awaiting-merge\nPull Request: https:\/\/github\.com\/owner\/repo\/pull\/1$/m);
+    expect(branchFile).toContain(`**Pull Request opened**: ${URL}`);
+    expect(git(repo.dir, "status", "--porcelain")).toContain(FILE);
+    expect(git(repo.dir, "hash-object", FILE)).toBe(git(repo.dir, "rev-parse", `issue/01-first:${FILE}`));
+    expect(git(origin, "rev-parse", "issue/01-first")).toBe(git(repo.dir, "rev-parse", "issue/01-first"));
+  });
+
+  it("pulls the target branch and marks the Issue done after the Pull Request is merged, leaving other changes alone", async () => {
+    await publishFirst();
+    mergeOnOrigin();
+    repo.write("README.md", "# local edit\n");
+    repo.write("notes.txt", "untracked\n");
+
+    await runAfterMerge();
+
+    expect(statusOf()).toBe("done");
+    expect(git(repo.dir, "rev-parse", "main")).toBe(git(origin, "rev-parse", "main"));
+    expect(repo.read("feature.txt")).toBe("implemented\n");
+    expect(repo.read("README.md")).toBe("# local edit\n");
+    expect(repo.read("notes.txt")).toBe("untracked\n");
+    expect(output.join("\n")).not.toMatch(/Warning/);
+    expect(output.join("\n")).toContain(`Issue 01 is done: its Pull Request ${URL} is merged.`);
+  });
+
+  it("leaves a working copy whose Issue file differs from the branch untouched, and warns", async () => {
+    await publishFirst();
+    mergeOnOrigin();
+    const edited = `${repo.read(FILE)}\nA HUMAN NOTE\n`;
+    repo.write(FILE, edited);
+    const before = git(repo.dir, "rev-parse", "main");
+
+    await runAfterMerge();
+
+    expect(repo.read(FILE)).toBe(edited);
+    expect(statusOf()).toBe("awaiting-merge");
+    expect(git(repo.dir, "rev-parse", "main")).toBe(before);
+    expect(output.join("\n")).toContain(`Warning: Issue 01's Pull Request ${URL} is merged, but ${FILE} was left as it is`);
+    expect(output.join("\n")).toContain("differs from the file at the tip of issue/01-first");
+  });
+
+  it("leaves the Issue file alone and warns when the target branch is not checked out", async () => {
+    await publishFirst();
+    mergeOnOrigin();
+    const before = repo.read(FILE);
+    git(repo.dir, "checkout", "-q", "-b", "elsewhere");
+    output = [];
+
+    await runWorkflow({
+      repoDir: repo.dir,
+      agent: fakeAgent(repo.dir),
+      publisher: fakePublisher({ states: { [URL]: "MERGED" } }),
+      config,
+      targetBranch: "main",
+      log,
+    });
+
+    expect(repo.read(FILE)).toBe(before);
+    expect(statusOf()).toBe("awaiting-merge");
+    expect(output.join("\n")).toMatch(/Warning: Issue 01's .* was left as it is .*the target branch main is not checked out/);
+  });
+
+  it("puts the Issue file back and warns when the pull fails", async () => {
+    await publishFirst();
+    mergeOnOrigin();
+    // A local commit on main makes the fast-forward impossible.
+    repo.write("diverged.txt", "local\n");
+    git(repo.dir, "add", "diverged.txt");
+    git(repo.dir, "commit", "-q", "-m", "diverge");
+    const before = repo.read(FILE);
+
+    await runAfterMerge();
+
+    expect(repo.read(FILE)).toBe(before);
+    // The edit is back in the working copy, and the index is as it was.
+    expect(git(repo.dir, "diff", "--name-only")).toBe(FILE);
+    expect(git(repo.dir, "diff", "--cached", "--name-only")).toBe("");
+    expect(statusOf()).toBe("awaiting-merge");
+    expect(output.join("\n")).toContain(`${FILE} was left as it is and the Issue stays awaiting-merge: \`git pull --ff-only origin main\` failed`);
+  });
+
+  it("commits and pushes nothing for an Issue that fails the Gate", async () => {
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: withPullRequests(["false"]), log });
+
+    expect(statusOf()).toBe("ready-for-human");
+    expect(publisher.pushes).toEqual([]);
+    expect(git(repo.dir, "log", "--format=%s", "main..issue/01-first")).toBe("fake agent: implement issue");
+    expect(git(origin, "branch", "--list", "issue/01-first")).toBe("");
+  });
+
+  it("says the Pull Request was opened, with its URL, when the comment after opening it fails", async () => {
+    const store = createIssueStore(repo.dir);
+    const failing = {
+      ...store,
+      async comment(issue: Issue, text: string) {
+        if (text.startsWith("**Pull Request opened**")) throw new Error("COMMENT-FAILED-MARKER");
+        return store.comment(issue, text);
+      },
+    };
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher: fakePublisher(), store: failing, config, log });
+
+    expect(result.issues[0]).toMatchObject({ outcome: "awaiting-merge", pullRequest: { published: true, url: URL } });
+    const text = output.join("\n");
+    expect(text).not.toContain("Could not publish the Pull Request");
+    expect(text).toContain(`The Pull Request was opened at ${URL}, but`);
+    expect(text).toContain("COMMENT-FAILED-MARKER");
+    expect(repo.read(FILE)).not.toContain("Could not publish the Pull Request");
+    expect(repo.read(FILE)).toContain(`The Pull Request was opened at ${URL}`);
+    expect(statusOf()).toBe("awaiting-merge");
+  });
+
+  it("says the Pull Request was opened when pushing the Issue file afterwards fails", async () => {
+    const result = await runWorkflow({
+      repoDir: repo.dir,
+      agent: fakeAgent(repo.dir),
+      publisher: fakePublisher({ failPush: "PUSH-FAILED-MARKER" }),
+      config,
+      log,
+    });
+
+    expect(result.issues[0]).toMatchObject({ pullRequest: { published: true, url: URL, error: expect.stringContaining("PUSH-FAILED-MARKER") } });
+    expect(output.join("\n")).toContain(`Warning: The Pull Request was opened at ${URL}, but`);
+    expect(output.join("\n")).not.toContain("Could not publish the Pull Request");
   });
 });

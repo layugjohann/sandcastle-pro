@@ -25,6 +25,8 @@ export type PullRequestState = "OPEN" | "CLOSED" | "MERGED";
 export interface Publisher {
   /** Pushes `branch` and opens a ready (not draft) Pull Request. Returns its URL; throws when either step fails. */
   publish(request: PullRequestRequest): Promise<{ url: string }>;
+  /** Pushes `branch` to `origin` again, after the host committed more onto it. Throws when the push fails. */
+  push(branch: string): Promise<void>;
   /** The Pull Request's state on GitHub. Throws when it can't be read. */
   state(url: string): Promise<PullRequestState>;
 }
@@ -50,6 +52,10 @@ export function createGitHubPublisher(repoDir: string): Publisher {
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
+    },
+
+    async push(branch) {
+      await run("git", ["push", "origin", branch], repoDir);
     },
 
     async state(url) {

@@ -1,14 +1,14 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { readOptional } from "./files.js";
 import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Agent, type Finding, type PausableStage, type Review } from "./agent.js";
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, withoutNpmExecPath, type GateResult } from "./gate.js";
-import { createIssueStore, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
+import { createIssueStore, mergeIssueFile, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
@@ -44,7 +44,7 @@ interface IssueOutcomeDetails {
 type ReviewedIssue = IssueOutcomeDetails & { review: Review };
 
 /** What happened when the Run tried to publish the Issue as a Pull Request. */
-export type PublishResult = { published: true; url: string } | { published: false; error: string };
+export type PublishResult = { published: true; url: string; error?: string } | { published: false; error: string };
 
 /**
  * Whether the body writer wrote the Pull Request's body. When it did not, the deterministic body was used,
@@ -144,7 +144,10 @@ type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "tar
  * Moves each `awaiting-merge` Issue the human has merged to `done`. An Issue with a Pull Request is merged when
  * GitHub says so, which also sees squash merges; one without is merged when its branch is in the target branch.
  */
-async function markMergedIssuesDone({ repoDir, targetBranch, store, log, publisher }: IssueContext): Promise<void> {
+async function markMergedIssuesDone(context: IssueContext): Promise<void> {
+  const { repoDir, targetBranch, store, log, publisher, config } = context;
+  const mergedPullRequests: Issue[] = [];
+  const caughtUp: Issue[] = [];
   for (const issue of await store.awaitingMerge()) {
     if (issue.pullRequest) {
       let state;
@@ -154,15 +157,110 @@ async function markMergedIssuesDone({ repoDir, targetBranch, store, log, publish
         log(`Warning: could not read the state of Issue ${issue.id}'s Pull Request ${issue.pullRequest}, so it stays awaiting-merge: ${errorMessage(error)}`);
         continue;
       }
+      if (state === "CLOSED") {
+        log(`Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was closed without being merged, so it stays awaiting-merge.`);
+        continue;
+      }
       if (state !== "MERGED") continue;
-      await store.transition(issue, "done");
-      log(`Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`);
+      if (config.pullRequest) {
+        // The Issue file was committed onto the branch, so the merge brings it in: catch up first.
+        mergedPullRequests.push(issue);
+      } else {
+        caughtUp.push(issue);
+      }
       continue;
     }
     if (!(await isMerged(repoDir, issue.branch, targetBranch))) continue;
     await store.transition(issue, "done");
     log(`Issue ${issue.id} is done: ${issue.branch} is merged into ${targetBranch}.`);
   }
+  caughtUp.push(...(await pullMergedIssueFiles(mergedPullRequests, context)));
+  for (const issue of caughtUp) {
+    await store.transition(issue, "done");
+    log(`Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`);
+  }
+}
+
+/** An Issue file whose local edit was discarded before the pull, kept so it can be put back. */
+interface DiscardedEdit {
+  issue: Issue;
+  file: string;
+  content: Buffer;
+  /** The file's `git ls-files -s` entry before the discard, or empty when it was not in the index. */
+  indexEntry: string;
+}
+
+/**
+ * Fast-forwards the target branch over the merged Pull Requests of `issues`. Each Issue file's local edit, which
+ * would make `git pull` refuse, is discarded first, but only when it matches the file at the tip of the Issue's
+ * branch, so nothing the merge does not bring back is lost. When a check or the pull fails, the files are put
+ * back as they were and a warning is logged. Returns the Issues that caught up. Other files are never touched.
+ */
+async function pullMergedIssueFiles(issues: readonly Issue[], { repoDir, targetBranch, log }: IssueContext): Promise<Issue[]> {
+  if (issues.length === 0) return [];
+  const warn = (issue: Issue, file: string, reason: string) =>
+    log(`Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} is merged, but ${file} was left as it is and the Issue stays awaiting-merge: ${reason}`);
+  const current = await git(repoDir, "branch", "--show-current");
+  const discarded: DiscardedEdit[] = [];
+  for (const issue of issues) {
+    const file = relative(repoDir, issue.path);
+    const reason =
+      current !== targetBranch
+        ? `the target branch ${targetBranch} is not checked out (the working copy is on ${current || "a detached HEAD"}).`
+        : await differenceFromBranch(repoDir, file, issue.branch);
+    if (reason) {
+      warn(issue, file, reason);
+      continue;
+    }
+    const edit: DiscardedEdit = {
+      issue,
+      file,
+      content: await readFile(issue.path),
+      indexEntry: await git(repoDir, "ls-files", "-s", "--", file),
+    };
+    try {
+      await git(repoDir, "checkout", "HEAD", "--", file);
+      discarded.push(edit);
+    } catch (error) {
+      await restoreEdit(repoDir, edit);
+      warn(issue, file, `could not discard its local edit: ${errorMessage(error)}`);
+    }
+  }
+  if (discarded.length === 0) return [];
+  try {
+    await git(repoDir, "pull", "-q", "--ff-only", "origin", targetBranch);
+  } catch (error) {
+    for (const edit of discarded) {
+      await restoreEdit(repoDir, edit);
+      warn(edit.issue, edit.file, `\`git pull --ff-only origin ${targetBranch}\` failed: ${gitErrorMessage(error)}`);
+    }
+    return [];
+  }
+  return discarded.map((edit) => edit.issue);
+}
+
+/** Why the working copy's `file` is not the one at the tip of `branch`, or undefined when it is. */
+async function differenceFromBranch(repoDir: string, file: string, branch: string): Promise<string | undefined> {
+  let atTip: string;
+  try {
+    atTip = await git(repoDir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}:${file}`);
+  } catch {
+    return `it is not on the local branch ${branch}.`;
+  }
+  const local = await git(repoDir, "hash-object", "--", file);
+  return local === atTip ? undefined : `it differs from the file at the tip of ${branch}.`;
+}
+
+async function restoreEdit(repoDir: string, { issue, content, indexEntry, file }: DiscardedEdit): Promise<void> {
+  await writeFile(issue.path, content);
+  const entry = /^(\d+) ([0-9a-f]+) \d+\t/.exec(indexEntry);
+  if (entry) await git(repoDir, "update-index", "--cacheinfo", `${entry[1]},${entry[2]},${file}`);
+}
+
+/** Git's stderr when it has one, else the error's message. */
+function gitErrorMessage(error: unknown): string {
+  const stderr = (error as { stderr?: unknown }).stderr;
+  return typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : errorMessage(error);
 }
 
 function errorMessage(error: unknown): string {
@@ -285,7 +383,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   // Even when publishing failed, the work passed the Gate and waits for the human: the branch is still there.
   await store.transition(issue, "awaiting-merge");
   const published = pullRequest.published
-    ? `Pull Request: ${pullRequest.url}`
+    ? [`Pull Request: ${pullRequest.url}`, ...(pullRequest.error ? [`Warning: ${pullRequest.error}`] : [])].join("\n")
     : `Could not publish the Pull Request: ${pullRequest.error}`;
   const bodyNote = written.result.written ? undefined : written.note;
   log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [published, bodyNote, report]));
@@ -366,25 +464,82 @@ async function restoreBranch(
 }
 
 /**
- * Pushes the Issue's branch and opens its Pull Request against the target branch. The host does this, never the
- * sandbox. A failure is commented on the Issue and returned rather than thrown, so the Run carries on.
+ * Merges the Issue file, with its Run comments, onto the Issue's branch, pushes the branch and opens its Pull
+ * Request against the target branch. Once it is open, the URL is recorded, the Issue moves to `awaiting-merge`,
+ * and the Issue file is merged onto the branch and pushed again, so the working copy's file matches the branch
+ * tip. When publishing fails, the branch is put back as it was, so the Issue-file commit never lingers on it. The
+ * host does all this, never the sandbox. A failure is commented on the Issue and returned rather than thrown, so
+ * the Run carries on.
  */
-async function publishPullRequest(issue: Issue, body: string, { store, publisher, targetBranch }: IssueContext): Promise<PublishResult> {
+async function publishPullRequest(issue: Issue, body: string, options: IssueContext): Promise<PublishResult> {
+  const { store, publisher, targetBranch, repoDir, log } = options;
+  const commitMessage = `Record Issue ${issue.id}'s Run comments`;
+  const file = relative(repoDir, issue.path);
+  const tip = await git(repoDir, "rev-parse", issue.branch);
+  let url: string;
+  let merged: string;
   try {
-    const { url } = await publisher.publish({
+    merged = await commitIssueFile(repoDir, issue, (await showFile(repoDir, targetBranch, file)) ?? "", commitMessage);
+    ({ url } = await publisher.publish({
       branch: issue.branch,
       base: targetBranch,
       title: `Issue ${issue.id}: ${issue.title}`,
       body,
-    });
-    await store.recordPullRequest(issue, url);
-    await store.comment(issue, `**Pull Request opened**: ${url}`);
-    return { published: true, url };
+    }));
   } catch (error) {
     const message = errorMessage(error);
+    await git(repoDir, "update-ref", `refs/heads/${issue.branch}`, tip);
     await store.comment(issue, `**Could not publish the Pull Request**\n\n${fenced(message.trim())}`);
     return { published: false, error: message };
   }
+  try {
+    await writeFile(issue.path, merged);
+    await store.recordPullRequest(issue, url);
+    await store.comment(issue, `**Pull Request opened**: ${url}`);
+    await store.transition(issue, "awaiting-merge");
+    await writeFile(issue.path, await commitIssueFile(repoDir, issue, merged, commitMessage));
+    await publisher.push(issue.branch);
+    return { published: true, url };
+  } catch (error) {
+    // The Pull Request exists: say so, so the human never opens a second one.
+    const message = `The Pull Request was opened at ${url}, but recording it on the Issue and its branch failed: ${errorMessage(error)}`;
+    try {
+      await store.comment(issue, `**Warning**: ${message}`);
+    } catch (commentError) {
+      // The Run summary still carries the message; say why the Issue file does not.
+      log(`Warning: could not comment on Issue ${issue.id}: ${errorMessage(commentError)}`);
+    }
+    return { published: true, url, error: message };
+  }
+}
+
+/**
+ * Merges the working copy's Issue file into the copy at the tip of its branch (see `mergeIssueFile`), never
+ * overwriting the branch's copy, and commits the result there when it changed. `base` is the file both last
+ * agreed on. Returns the merged file, for the caller to write back to the working copy.
+ */
+async function commitIssueFile(repoDir: string, issue: Issue, base: string, message: string): Promise<string> {
+  const file = relative(repoDir, issue.path);
+  const working = await readFile(issue.path, "utf8");
+  const branchCopy = await showFile(repoDir, issue.branch, file);
+  const merged = branchCopy === undefined ? working : mergeIssueFile(branchCopy, working, base);
+  await withWorktree(repoDir, issue.branch, async (dir) => {
+    await mkdir(dirname(join(dir, file)), { recursive: true });
+    await writeFile(join(dir, file), merged);
+    await git(dir, "add", "--", file);
+    if (await git(dir, "status", "--porcelain", "--", file)) await git(dir, "commit", "-q", "--no-verify", "-m", message);
+  });
+  return merged;
+}
+
+/** `file` as committed at `ref`, or undefined when it is not there. */
+async function showFile(repoDir: string, ref: string, file: string): Promise<string | undefined> {
+  try {
+    await git(repoDir, "rev-parse", "--verify", "--quiet", `${ref}:${file}`);
+  } catch {
+    return undefined;
+  }
+  return (await exec("git", ["show", `${ref}:${file}`], { cwd: repoDir, maxBuffer: 64 * 1024 * 1024 })).stdout;
 }
 
 /**
@@ -535,7 +690,7 @@ async function writeGateLog(repoDir: string, issue: Issue, gate: GateResult): Pr
 }
 
 async function withWorktree<T>(repoDir: string, branch: string, fn: (dir: string) => Promise<T>): Promise<T> {
-  const parent = await mkdtemp(join(tmpdir(), "sandcastle-pro-gate-"));
+  const parent = await mkdtemp(join(tmpdir(), "sandcastle-pro-worktree-"));
   const dir = join(parent, "worktree");
   await git(repoDir, "worktree", "add", "-q", dir, branch);
   try {

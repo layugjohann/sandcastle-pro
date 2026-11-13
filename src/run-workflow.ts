@@ -11,6 +11,8 @@ import { runGate, withoutNpmExecPath, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 import { buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
+import { createGitHubPublisher, type Publisher } from "./publisher.js";
+import { buildPullRequestBody } from "./pull-request-body.js";
 import { formatUsage, type IssueUsage } from "./usage.js";
 
 const exec = promisify(execFile);
@@ -23,6 +25,8 @@ export interface RunOptions {
   /** The project config. Defaults to the one read from `repoDir`. */
   config?: Config;
   store?: IssueStore;
+  /** Publishes Pull Requests and reads their state, when `config.pullRequest` is on. Defaults to `git` and `gh`. */
+  publisher?: Publisher;
   /** Branch the Issue branch starts from. Defaults to the current branch. */
   targetBranch?: string;
   /** The most Issues this Run processes, one after another. Defaults to 1. */
@@ -39,8 +43,11 @@ interface IssueOutcomeDetails {
 
 type ReviewedIssue = IssueOutcomeDetails & { review: Review };
 
+/** What happened when the Run tried to publish the Issue as a Pull Request. */
+export type PublishResult = { published: true; url: string } | { published: false; error: string };
+
 export type IssueResult =
-  | ({ outcome: "awaiting-merge" } & ReviewedIssue)
+  | ({ outcome: "awaiting-merge"; /** Absent when `pullRequest` is off. */ pullRequest?: PublishResult } & ReviewedIssue)
   | ({ outcome: "spec-disagreement" } & ReviewedIssue)
   | ({ outcome: "gate-failed"; gate: GateResult } & ReviewedIssue)
   | ({ outcome: "critical-unfixed"; unfixedCritical: Finding[] } & ReviewedIssue)
@@ -68,7 +75,8 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   const targetBranch = options.targetBranch ?? (await git(options.repoDir, "branch", "--show-current"));
   if (!targetBranch) throw new Error("No target branch: check out a branch, or pass targetBranch.");
   const config = options.config ?? (await loadConfig(options.repoDir));
-  const context = { ...options, config, targetBranch, log, store };
+  const publisher = options.publisher ?? createGitHubPublisher(options.repoDir);
+  const context = { ...options, config, targetBranch, log, store, publisher };
   await markMergedIssuesDone(context);
 
   const issues: IssueResult[] = [];
@@ -111,20 +119,41 @@ async function runIssues(issues: IssueResult[], count: number, context: IssueCon
   }
 }
 
-type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "targetBranch"> & {
+type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "targetBranch" | "publisher"> & {
   config: Config;
   targetBranch: string;
   log: (line: string) => void;
   store: IssueStore;
+  publisher: Publisher;
 };
 
-/** Moves each `awaiting-merge` Issue whose branch the human has merged into the target branch to `done`. */
-async function markMergedIssuesDone({ repoDir, targetBranch, store, log }: IssueContext): Promise<void> {
+/**
+ * Moves each `awaiting-merge` Issue the human has merged to `done`. An Issue with a Pull Request is merged when
+ * GitHub says so, which also sees squash merges; one without is merged when its branch is in the target branch.
+ */
+async function markMergedIssuesDone({ repoDir, targetBranch, store, log, publisher }: IssueContext): Promise<void> {
   for (const issue of await store.awaitingMerge()) {
+    if (issue.pullRequest) {
+      let state;
+      try {
+        state = await publisher.state(issue.pullRequest);
+      } catch (error) {
+        log(`Warning: could not read the state of Issue ${issue.id}'s Pull Request ${issue.pullRequest}, so it stays awaiting-merge: ${errorMessage(error)}`);
+        continue;
+      }
+      if (state !== "MERGED") continue;
+      await store.transition(issue, "done");
+      log(`Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`);
+      continue;
+    }
     if (!(await isMerged(repoDir, issue.branch, targetBranch))) continue;
     await store.transition(issue, "done");
     log(`Issue ${issue.id} is done: ${issue.branch} is merged into ${targetBranch}.`);
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function isMerged(repoDir: string, branch: string, target: string): Promise<boolean> {
@@ -230,9 +259,46 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   }
 
   await store.comment(issue, `**Gate passed**: every command exited 0 (log: \`${gateLog}\`).`);
+  if (!config.pullRequest) {
+    await store.transition(issue, "awaiting-merge");
+    log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [report]));
+    return { outcome: "awaiting-merge", issue, branch, review, usage };
+  }
+
+  const pullRequest = await publishPullRequest(issue, { gateOutput: gate.output, findings: review.findings, usage }, options);
+  // Even when publishing failed, the work passed the Gate and waits for the human: the branch is still there.
   await store.transition(issue, "awaiting-merge");
-  log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [report]));
-  return { outcome: "awaiting-merge", issue, branch, review, usage };
+  const published = pullRequest.published
+    ? `Pull Request: ${pullRequest.url}`
+    : `Could not publish the Pull Request: ${pullRequest.error}`;
+  log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [published, report]));
+  return { outcome: "awaiting-merge", issue, branch, review, usage, pullRequest };
+}
+
+/**
+ * Pushes the Issue's branch and opens its Pull Request against the target branch. The host does this, never the
+ * sandbox. A failure is commented on the Issue and returned rather than thrown, so the Run carries on.
+ */
+async function publishPullRequest(
+  issue: Issue,
+  body: Parameters<typeof buildPullRequestBody>[0],
+  { store, publisher, targetBranch }: IssueContext,
+): Promise<PublishResult> {
+  try {
+    const { url } = await publisher.publish({
+      branch: issue.branch,
+      base: targetBranch,
+      title: `Issue ${issue.id}: ${issue.title}`,
+      body: buildPullRequestBody(body),
+    });
+    await store.recordPullRequest(issue, url);
+    await store.comment(issue, `**Pull Request opened**: ${url}`);
+    return { published: true, url };
+  } catch (error) {
+    const message = errorMessage(error);
+    await store.comment(issue, `**Could not publish the Pull Request**\n\n${fenced(message.trim())}`);
+    return { published: false, error: message };
+  }
 }
 
 /**

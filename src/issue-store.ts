@@ -20,6 +20,8 @@ export type Status = (typeof STATUSES)[number];
 export interface Issue {
   /** The number prefix as written in the file name, e.g. "01". */
   id: string;
+  /** The `# ` heading without its number prefix, e.g. "Only" for `# 01: Only`. Falls back to the file's slug. */
+  title: string;
   /** The Issue's own branch, `issue/NN-slug`. */
   branch: string;
   /** The Issue file's full text when it was read. */
@@ -34,6 +36,8 @@ export interface Issue {
   status: Status | undefined;
   /** Where a `paused` Issue stopped, so its Run can continue that session. Undefined when not paused or unreadable. */
   paused: PausedAt | undefined;
+  /** The URL on the Issue's `Pull Request:` line, once a Run has published it. */
+  pullRequest: string | undefined;
 }
 
 export interface PausedAt {
@@ -60,6 +64,8 @@ export interface IssueStore {
   pause(issue: Issue, at: PausedAt): Promise<void>;
   /** Appends text under the Issue's `## Comments` heading, creating it if needed. */
   comment(issue: Issue, text: string): Promise<void>;
+  /** Records the Issue's Pull Request URL as a `Pull Request:` line near the top, replacing any earlier one. */
+  recordPullRequest(issue: Issue, url: string): Promise<void>;
 }
 
 const ISSUE_FILE = /^(\d+)-(.+)\.md$/;
@@ -67,6 +73,19 @@ const STATUS_LINE = /^Status:[ \t]*(\S*).*$/m;
 const PAUSED_SESSION_LINE = /^Paused session:[ \t]*(.*)$/m;
 const PAUSED_STAGE_LINE = /^Paused stage:[ \t]*(.*)$/m;
 const PAUSE_RECORD = /^Paused (session|stage):.*\n?/gm;
+const PULL_REQUEST_LINE = /^Pull Request:[ \t]*(.*)$/m;
+
+/** The URL on the `Pull Request:` line above `## Comments`, or undefined when there is none. */
+function parsePullRequest(text: string): string | undefined {
+  const value = PULL_REQUEST_LINE.exec(headerOf(text))?.[1]?.replace(/[`<>]/g, "").trim();
+  return value || undefined;
+}
+
+/** The `# ` heading without a leading `NN:` number, or undefined when the file has no heading. */
+function parseTitle(text: string): string | undefined {
+  const heading = /^# (.+)$/m.exec(text)?.[1]?.trim();
+  return heading?.replace(/^\d+\s*[:.-]\s*/, "").trim() || undefined;
+}
 
 function parseStatus(text: string): Status | undefined {
   const value = STATUS_LINE.exec(text)?.[1];
@@ -167,15 +186,18 @@ export function createIssueStore(repoDir: string): IssueStore {
   }
 
   async function toIssue(file: IssueFile): Promise<Issue> {
+    const slug = basename(file.path, ".md");
     return {
       id: file.id,
-      branch: `issue/${basename(file.path, ".md")}`,
+      title: parseTitle(file.text) ?? slug.replace(/^\d+-/, "").replaceAll("-", " "),
+      branch: `issue/${slug}`,
       text: file.text,
       spec: await readSpec(file.path, file.text),
       path: file.path,
       model: parseModel(file.text),
       status: file.status,
       paused: file.status === "paused" ? parsePausedAt(file.text) : undefined,
+      pullRequest: parsePullRequest(file.text),
     };
   }
 
@@ -215,6 +237,18 @@ export function createIssueStore(repoDir: string): IssueStore {
       let text = (await readFile(issue.path, "utf8")).replace(/\s*$/, "\n");
       if (!/^## Comments[ \t]*$/m.test(text)) text += "\n## Comments\n";
       await writeFile(issue.path, `${text}\n${comment.trim()}\n`);
+    },
+
+    async recordPullRequest(issue, url) {
+      const text = await readFile(issue.path, "utf8");
+      const header = headerOf(text);
+      const line = `Pull Request: ${url}`;
+      const updated = PULL_REQUEST_LINE.test(header)
+        ? header.replace(PULL_REQUEST_LINE, line)
+        : STATUS_LINE.test(header)
+          ? header.replace(STATUS_LINE, (status) => `${status}\n${line}`)
+          : insertAfterTitle(header, line);
+      await writeFile(issue.path, updated + text.slice(header.length));
     },
   };
 }

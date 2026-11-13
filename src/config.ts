@@ -20,6 +20,8 @@ export interface Config {
   effort: Effort;
   maxIterations: { implementer: number; reviewSession: number };
   sandbox: SandboxChoice;
+  /** Publish each Issue that passes the Gate as a Pull Request. Off unless the project opts in. */
+  pullRequest: boolean;
 }
 
 export const DEFAULT_CONFIG: Omit<Config, "gate"> = {
@@ -27,6 +29,7 @@ export const DEFAULT_CONFIG: Omit<Config, "gate"> = {
   effort: "medium",
   maxIterations: { implementer: 3, reviewSession: 1 },
   sandbox: "native",
+  pullRequest: false,
 };
 
 /** Reads and validates `sandcastle-pro.config.json` in `repoDir`. Throws an error naming the problem. */
@@ -47,9 +50,9 @@ function parseConfig(text: string): Config {
     throw configError(`is not valid JSON: ${(error as Error).message}`);
   }
   if (!isObject(raw)) throw configError("must be a JSON object.");
-  rejectUnknownKeys(raw, ["gate", "model", "effort", "maxIterations", "sandbox"], "");
+  rejectUnknownKeys(raw, ["gate", "model", "effort", "maxIterations", "sandbox", "pullRequest"], "");
 
-  const { gate, model, effort, maxIterations, sandbox } = raw;
+  const { gate, model, effort, maxIterations, sandbox, pullRequest } = raw;
   if (gate === undefined) throw configError(`is missing "gate": list the Gate commands, e.g. ["npm test"].`);
   if (!isGate(gate)) {
     throw configError(`"gate" must be a non-empty list of command strings, got ${JSON.stringify(gate)}.`);
@@ -62,6 +65,9 @@ function parseConfig(text: string): Config {
   }
   if (sandbox !== undefined && !SANDBOXES.includes(sandbox as SandboxChoice)) {
     throw configError(`"sandbox" must be one of ${SANDBOXES.join(", ")}, got ${JSON.stringify(sandbox)}.`);
+  }
+  if (pullRequest !== undefined && typeof pullRequest !== "boolean") {
+    throw configError(`"pullRequest" must be true or false, got ${JSON.stringify(pullRequest)}.`);
   }
   if (maxIterations !== undefined && !isObject(maxIterations)) {
     throw configError(`"maxIterations" must be an object, got ${JSON.stringify(maxIterations)}.`);
@@ -80,6 +86,7 @@ function parseConfig(text: string): Config {
     effort: (effort as Effort | undefined) ?? DEFAULT_CONFIG.effort,
     maxIterations: { ...DEFAULT_CONFIG.maxIterations, ...(limits as Partial<Config["maxIterations"]>) },
     sandbox: (sandbox as SandboxChoice | undefined) ?? DEFAULT_CONFIG.sandbox,
+    pullRequest: (pullRequest as boolean | undefined) ?? DEFAULT_CONFIG.pullRequest,
   };
 }
 

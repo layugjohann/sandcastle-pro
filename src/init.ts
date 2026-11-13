@@ -180,8 +180,10 @@ Set by a Run:
 - \`paused\`: the Run hit the usage limit. The next Run resumes it before any new Issue.
   The \`Paused session:\` and \`Paused stage:\` lines record where to continue; leave them alone.
 - \`needs-info\`: the Review Session believes the Spec itself is wrong. Read its comment, fix the Spec or Issue, and set \`ready-for-agent\` again.
-- \`awaiting-merge\`: passed the Gate. Review and merge \`issue/NN-slug\` yourself.
-- \`done\`: its branch was merged into the target branch, detected at the start of the next Run.
+- \`awaiting-merge\`: passed the Gate. Review and merge \`issue/NN-slug\` yourself. With \`"pullRequest": true\` in the
+  config, the Run publishes it as a Pull Request and records the URL on a \`Pull Request:\` line; leave that line alone.
+- \`done\`: merged, detected at the start of the next Run: its Pull Request is merged on GitHub or, without one,
+  its branch is merged into the target branch.
 
 ## Comments
 

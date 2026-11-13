@@ -1,6 +1,6 @@
 # 14: Publish each finished Issue as a Pull Request (plain body)
 
-Status: ready-for-agent
+Status: done
 Blocked by: 13
 
 Spec: `.scratch/sandcastle-pro/spec.md`, as amended by `docs/adr/0003-publish-each-issue-as-a-pull-request.md`

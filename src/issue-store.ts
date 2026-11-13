@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { STAGE_NAMES, type Stage } from "./agent.js";
+import { STAGE_NAMES, type PausableStage } from "./agent.js";
 
 export const STATUSES = [
   "needs-triage",
@@ -42,7 +42,7 @@ export interface Issue {
 
 export interface PausedAt {
   sessionId: string;
-  stage: Stage;
+  stage: PausableStage;
 }
 
 export interface BlockedIssue {
@@ -115,12 +115,14 @@ function parseModel(text: string): string | undefined {
   return value || undefined;
 }
 
+const PAUSABLE_STAGES: readonly PausableStage[] = ["implementer", "review-session"];
+
 /** The pause record of a `paused` Issue, or undefined when either line is missing or unreadable. */
 function parsePausedAt(text: string): PausedAt | undefined {
   const header = headerOf(text);
   const sessionId = PAUSED_SESSION_LINE.exec(header)?.[1]?.replace(/`/g, "").trim();
   const stageName = PAUSED_STAGE_LINE.exec(header)?.[1]?.trim();
-  const stage = (Object.keys(STAGE_NAMES) as Stage[]).find((s) => STAGE_NAMES[s] === stageName);
+  const stage = PAUSABLE_STAGES.find((s) => STAGE_NAMES[s] === stageName);
   return sessionId && stage ? { sessionId, stage } : undefined;
 }
 

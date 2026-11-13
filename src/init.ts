@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import { API_KEY, ENV_FILE, OAUTH_TOKEN } from "./auth.js";
 import { PROJECT_CODING_STANDARDS } from "./coding-standards.js";
 import { CONFIG_FILE, DEFAULT_CONFIG, isGate, type SandboxChoice } from "./config.js";
@@ -20,14 +22,26 @@ export interface InitOptions {
    * confirmed or edited interactively; when omitted, they are used as detected.
    */
   ask?: (question: string) => Promise<string>;
+  /** Whether `gh auth status` succeeds. Defaults to running it. Asked only when `origin` is on GitHub. */
+  ghAuthenticated?: () => Promise<boolean>;
   log?: (line: string) => void;
 }
+
+const exec = promisify(execFile);
 
 /** The native sandbox Sandcastle provides for each OS that has one. */
 const NATIVE_SANDBOXES: Partial<Record<NodeJS.Platform, string>> = { darwin: "Seatbelt", linux: "bubblewrap" };
 
 /** Makes a project ready for Runs. Never overwrites an existing file. */
-export async function initProject({ repoDir, gate, sandbox, platform = process.platform, ask, log = console.log }: InitOptions): Promise<void> {
+export async function initProject({
+  repoDir,
+  gate,
+  sandbox,
+  platform = process.platform,
+  ask,
+  ghAuthenticated = ghAuthStatus,
+  log = console.log,
+}: InitOptions): Promise<void> {
   const native = NATIVE_SANDBOXES[platform];
   sandbox ??= native ? "native" : "docker";
   if (gate !== undefined && !isGate(gate)) {
@@ -37,9 +51,18 @@ export async function initProject({ repoDir, gate, sandbox, platform = process.p
 
   // An existing config is kept, so there is nothing to detect or ask.
   const configExists = existsSync(join(repoDir, CONFIG_FILE));
+  let pullRequest = false;
   if (!configExists) {
     gate ??= await chooseGate(await detectGate(repoDir), ask, log);
-    const config = { gate, model: DEFAULT_CONFIG.model, effort: DEFAULT_CONFIG.effort, sandbox };
+    // Offered only where publishing can work; elsewhere the setting stays off without a word.
+    if (await canPublish(repoDir, ghAuthenticated)) pullRequest = await choosePullRequest(ask, log);
+    const config = {
+      gate,
+      model: DEFAULT_CONFIG.model,
+      effort: DEFAULT_CONFIG.effort,
+      sandbox,
+      ...(pullRequest ? { pullRequest, bodyWriter: DEFAULT_CONFIG.bodyWriter } : {}),
+    };
     await writeNew(repoDir, CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, log);
   } else {
     log(`skipped  ${CONFIG_FILE} (already exists)`);
@@ -53,6 +76,10 @@ export async function initProject({ repoDir, gate, sandbox, platform = process.p
   if (gate !== undefined && !configExists) {
     log(`Sandbox: ${sandbox === "native" ? `${native} (native to ${platform})` : "Docker"}`);
     log(`Gate:    ${gate.join(" && ")}`);
+    if (pullRequest) {
+      const { model, effort } = DEFAULT_CONFIG.bodyWriter;
+      log(`Pull Requests: on; each Issue that passes the Gate is published, its body written by ${model} at ${effort} effort.`);
+    }
   } else {
     log(`Kept the Gate and sandbox in the existing ${CONFIG_FILE}; edit it to change them.`);
   }
@@ -97,6 +124,39 @@ async function chooseGate(detected: string[], ask: InitOptions["ask"], log: (lin
     else if (gate.length > 0) return gate;
     else log("The Gate needs at least one command.");
   }
+}
+
+/** Whether Runs could publish Pull Requests here: `origin` is on GitHub, which `git push` uses, and `gh` is logged in. */
+async function canPublish(repoDir: string, ghAuthenticated: () => Promise<boolean>): Promise<boolean> {
+  let origin: string;
+  try {
+    origin = (await exec("git", ["remote", "get-url", "origin"], { cwd: repoDir })).stdout.trim();
+  } catch {
+    return false; // Not a git repo, or no `origin`.
+  }
+  return /github\.com[:/]/i.test(origin) && (await ghAuthenticated());
+}
+
+async function ghAuthStatus(): Promise<boolean> {
+  try {
+    await exec("gh", ["auth", "status"]);
+    return true;
+  } catch {
+    return false; // `gh` is missing or not logged in.
+  }
+}
+
+/**
+ * Whether to turn `pullRequest` on. With `ask`, the user's answer, off unless they say yes. Without it,
+ * off, with a pointer to the setting, since a non-interactive init should not publish anything on its own.
+ */
+async function choosePullRequest(ask: InitOptions["ask"], log: (line: string) => void): Promise<boolean> {
+  if (!ask) {
+    log(`This repo is on GitHub and gh is logged in: set "pullRequest": true in ${CONFIG_FILE} to publish each Issue as a Pull Request.`);
+    return false;
+  }
+  log("This repo is on GitHub and gh is logged in, so Runs can publish each Issue that passes the Gate as a Pull Request.");
+  return /^\s*y/i.test(await ask("  Turn on Pull Requests? [y/N] "));
 }
 
 /** Appends the entries `.gitignore` lacks, creating it if needed. Existing lines are never changed. */

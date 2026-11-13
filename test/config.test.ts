@@ -109,4 +109,25 @@ describe("Project config", () => {
     repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: false }));
     expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
   });
+
+  it("gives the body writer Sonnet at low effort unless the config overrides either", async () => {
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: true }));
+    expect((await loadConfig(repo.dir)).bodyWriter).toEqual({ model: "claude-sonnet-5-5", effort: "low" });
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: true, bodyWriter: { effort: "medium" } }));
+    expect((await loadConfig(repo.dir)).bodyWriter).toEqual({ model: "claude-sonnet-5-5", effort: "medium" });
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: true, bodyWriter: { model: "claude-haiku-5-5", effort: "high" } }));
+    expect((await loadConfig(repo.dir)).bodyWriter).toEqual({ model: "claude-haiku-5-5", effort: "high" });
+  });
+
+  it.each([
+    ["a body writer that is not an object", `{"gate": ["true"], "bodyWriter": "fast"}`, /"bodyWriter" must be an object/],
+    ["an unknown body writer key", `{"gate": ["true"], "bodyWriter": {"modle": "x"}}`, /unknown key "bodyWriter.modle"/],
+    ["an empty body writer model", `{"gate": ["true"], "bodyWriter": {"model": " "}}`, /"bodyWriter.model" must be a non-empty string/],
+    ["an unknown body writer effort", `{"gate": ["true"], "bodyWriter": {"effort": "tiny"}}`, /"bodyWriter.effort" must be one of/],
+  ])("names the problem when the config has %s", async (_case, text, problem) => {
+    repo.write(CONFIG, text);
+    await expect(loadConfig(repo.dir)).rejects.toThrow(problem);
+  });
 });

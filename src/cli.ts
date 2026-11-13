@@ -14,7 +14,8 @@ const USAGE = `Usage: npx sandcastle-pro init [--gate CMD ...] [--sandbox native
 
   init   Make this project ready for Runs. Never overwrites an existing file.
          Detects Gate commands from package scripts, Python project config and Makefile targets,
-         and asks you to confirm or edit them.
+         and asks you to confirm or edit them. When origin is on GitHub and gh is logged in,
+         offers to publish each Issue that passes the Gate as a Pull Request.
          --gate CMD          a Gate command instead of the detected ones; repeat for each, in the order they run
          --non-interactive   never ask: use the detected Gate commands (also the default without a terminal)
          --sandbox native    Seatbelt on macOS, bubblewrap on Linux (the default there)

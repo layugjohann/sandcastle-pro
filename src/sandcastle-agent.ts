@@ -62,10 +62,13 @@ export function createSandcastleAgent({ repoDir, sandbox, auth }: SandcastleAgen
       const usage = watch.results.length === result.iterations.length ? sumUsage(watch.results) : undefined;
       if (watch.limitHit) {
         const sessionId = session();
+        // The body writer is never resumed, so it needs no session to report the limit.
+        if (call.stage === "body-writer") return { kind: "limit-reached", sessionId: sessionId ?? "", usage };
         if (!sessionId) throw new AgentCallError(`Claude hit the usage limit in the ${call.stage} but reported no session to resume.`);
         return { kind: "limit-reached", sessionId, usage };
       }
       if (call.stage === "implementer") return { kind: "completed", usage };
+      if (call.stage === "body-writer") return { kind: "completed", usage, body: parseBody(result.stdout) };
       return { kind: "completed", usage, review: parseReview(result.stdout) };
     },
   };
@@ -201,20 +204,37 @@ function sumUsage(iterations: readonly TokenUsage[]): TokenUsage | undefined {
  * Undefined when it is missing or malformed, which the Run Workflow treats as a failed review.
  */
 function parseReview(stdout: string): Review | undefined {
-  const blocks = [...stdout.matchAll(/(`{3,})json[ \t]*\n([\s\S]*?)\n\1/g)];
-  const last = blocks.at(-1)?.[2];
-  if (last === undefined) return undefined;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(last);
-  } catch {
-    return undefined;
-  }
-  if (!isObject(raw)) return undefined;
+  const raw = lastJsonBlock(stdout);
+  if (!raw) return undefined;
   const { findings, specDisagreements } = raw;
   if (!Array.isArray(findings) || !findings.every(isFinding)) return undefined;
   if (!Array.isArray(specDisagreements) || !specDisagreements.every((d) => typeof d === "string")) return undefined;
   return { findings, specDisagreements };
+}
+
+/**
+ * The body writer's Pull Request body, from the last fenced `json` block of its output.
+ * Undefined when it is missing or malformed, which the Run Workflow answers with the deterministic body.
+ */
+function parseBody(stdout: string): string | undefined {
+  const body = lastJsonBlock(stdout)?.body;
+  return typeof body === "string" && body.trim() !== "" ? body : undefined;
+}
+
+/**
+ * The last fenced `json` block holding a JSON object. A JSON string can't hold a raw newline,
+ * so a fence inside one, as in a body with a diagram, can't end the block early.
+ */
+function lastJsonBlock(stdout: string): Record<string, unknown> | undefined {
+  const blocks = [...stdout.matchAll(/(`{3,})json[ \t]*\n([\s\S]*?)\n\1/g)];
+  const last = blocks.at(-1)?.[2];
+  if (last === undefined) return undefined;
+  try {
+    const raw: unknown = JSON.parse(last);
+    return isObject(raw) ? raw : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isFinding(value: unknown): value is Finding {

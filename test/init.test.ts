@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createTempRepo, useTempHome, writeFile } from "./helpers.js";
+import { createTempRepo, git, useTempHome, writeFile, type TempRepo } from "./helpers.js";
 import { initProject, loadCodingStandards, loadConfig, STATUSES } from "../src/index.js";
 
 describe("init", () => {
@@ -310,5 +310,104 @@ describe("init", () => {
     } finally {
       repo.cleanup();
     }
+  });
+
+  describe("offering Pull Requests", () => {
+    let repo: TempRepo;
+    beforeEach(() => {
+      repo = createTempRepo();
+    });
+    afterEach(() => repo.cleanup());
+
+    const onGitHub = () => git(repo.dir, "remote", "add", "origin", "git@github.com:owner/repo.git");
+    const loggedIn = async () => true;
+    const loggedOut = async () => false;
+    /** Answers the Pull Request question with `answer`, and any other question with Enter. */
+    function answering(answer: string) {
+      const questions: string[] = [];
+      const ask = async (question: string) => {
+        questions.push(question);
+        return /Pull Request/i.test(question) ? answer : "";
+      };
+      return { ask, questions };
+    }
+    const asked = (questions: string[]) => questions.some((q) => /Pull Request/i.test(q));
+
+    it("offers to turn Pull Requests on when origin is on GitHub and gh is logged in, and turns them on when the user says yes", async () => {
+      onGitHub();
+      const user = answering("y");
+
+      await initProject({ repoDir: repo.dir, gate: ["true"], ask: user.ask, ghAuthenticated: loggedIn, log });
+
+      expect(asked(user.questions)).toBe(true);
+      const config = await loadConfig(repo.dir);
+      expect(config.pullRequest).toBe(true);
+      expect(config.bodyWriter).toEqual({ model: "claude-sonnet-5-5", effort: "low" });
+      expect(output.join("\n")).toMatch(/Pull Requests: on/);
+    });
+
+    it.each([[""], ["n"]])("leaves Pull Requests off when the user answers %j", async (answer) => {
+      onGitHub();
+      const user = answering(answer);
+
+      await initProject({ repoDir: repo.dir, gate: ["true"], ask: user.ask, ghAuthenticated: loggedIn, log });
+
+      expect(asked(user.questions)).toBe(true);
+      expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
+    });
+
+    it("does not offer Pull Requests, or mention them, without a GitHub remote", async () => {
+      git(repo.dir, "remote", "add", "origin", "https://gitlab.com/owner/repo.git");
+      const user = answering("y");
+      let checkedGh = false;
+
+      await initProject({ repoDir: repo.dir, gate: ["true"], ask: user.ask, ghAuthenticated: async () => (checkedGh = true), log });
+
+      expect(asked(user.questions)).toBe(false);
+      expect(checkedGh).toBe(false);
+      expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
+      expect(readFileSync(join(repo.dir, "sandcastle-pro.config.json"), "utf8")).not.toMatch(/pullRequest|bodyWriter/);
+      expect(output.join("\n")).not.toMatch(/Pull Request/i);
+    });
+
+    it("does not offer Pull Requests, or mention them, when gh is not logged in", async () => {
+      onGitHub();
+      const user = answering("y");
+
+      await initProject({ repoDir: repo.dir, gate: ["true"], ask: user.ask, ghAuthenticated: loggedOut, log });
+
+      expect(asked(user.questions)).toBe(false);
+      expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
+      expect(output.join("\n")).not.toMatch(/Pull Request/i);
+    });
+
+    it("does not offer Pull Requests outside a git repo", async () => {
+      const user = answering("y");
+
+      await initProject({ repoDir: dir, gate: ["true"], ask: user.ask, ghAuthenticated: loggedIn, log });
+
+      expect(asked(user.questions)).toBe(false);
+      expect((await loadConfig(dir)).pullRequest).toBe(false);
+    });
+
+    it("leaves Pull Requests off without asking when non-interactive, and says how to turn them on", async () => {
+      onGitHub();
+
+      await initProject({ repoDir: repo.dir, gate: ["true"], ghAuthenticated: loggedIn, log });
+
+      expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
+      expect(output.join("\n")).toMatch(/"pullRequest": true/);
+    });
+
+    it("does not offer Pull Requests when the config already exists", async () => {
+      onGitHub();
+      repo.write("sandcastle-pro.config.json", JSON.stringify({ gate: ["make ci"] }));
+      const user = answering("y");
+
+      await initProject({ repoDir: repo.dir, ask: user.ask, ghAuthenticated: loggedIn, log });
+
+      expect(user.questions).toEqual([]);
+      expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
+    });
   });
 });

@@ -13,3 +13,27 @@ Spec: `.scratch/sandcastle-pro/spec.md`, as amended by `docs/adr/0003-publish-ea
 - [x] Tested at the `runWorkflow` seam with a fake Agent:
   - an unfixed Critical Finding gives `ready-for-human`, no Gate run, and the Run stops with `--count 2`;
   - a fixed Critical Finding still reaches the Gate.
+
+## Comments
+
+Usage: Implementer 28 input, 7,211 output, 41,298 cache creation, 562,009 cache read; Review Session 12 input, 1,933 output, 22,947 cache creation, 173,224 cache read.
+
+**Review Session: Non-critical Findings**
+
+- The Issue file never records that the Gate was not run or why for a critical-unfixed outcome; only the console log says so. Someone reading the Issue sees ready-for-human and the Findings comment, but no explicit note that the Gate was skipped.
+- cli.ts now exits with 1 on the critical-unfixed outcome. This is consistent with gate-failed but was not requested by the Issue, and no test covers it.
+- The findingsForHuman doc comment ('any Critical one left unfixed') now only matters for the spec-disagreement path, because any Issue with an unfixed Critical Finding stops before the Gate. The comment could say so to stay accurate.
+
+**Gate failed** (log: `.sandcastle/logs/gate-13-2026-11-13T15-07-48-686Z.log`)
+
+```
+$ npm run typecheck
+
+> sandcastle-pro@0.0.0 typecheck
+> tsc --noEmit
+
+sh: tsc: command not found
+(exit code 127)
+```
+
+The Gate failure was environmental: the Gate worktree had no `node_modules`, so `tsc` was missing. With `npm ci` run first, `npm run check` passes on this branch (typecheck, 141 tests, build). The Gate config now starts with `npm ci`.

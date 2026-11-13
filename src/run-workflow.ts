@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readOptional } from "./files.js";
-import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Agent, type Finding, type Review, type Stage } from "./agent.js";
+import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Agent, type Finding, type PausableStage, type Review } from "./agent.js";
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, withoutNpmExecPath, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
-import { buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
+import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
-import { buildPullRequestBody } from "./pull-request-body.js";
+import { buildPullRequestBody, buildWrittenPullRequestBody, truncateStart, type PullRequestBodyInput } from "./pull-request-body.js";
 import { formatUsage, type IssueUsage } from "./usage.js";
 
 const exec = promisify(execFile);
@@ -46,8 +46,20 @@ type ReviewedIssue = IssueOutcomeDetails & { review: Review };
 /** What happened when the Run tried to publish the Issue as a Pull Request. */
 export type PublishResult = { published: true; url: string } | { published: false; error: string };
 
+/**
+ * Whether the body writer wrote the Pull Request's body. When it did not, the deterministic body was used,
+ * and `limitReached` says whether the usage limit was why, which ends the Run after this Issue.
+ */
+export type BodyWriterResult = { written: true } | { written: false; reason: string; limitReached: boolean };
+
 export type IssueResult =
-  | ({ outcome: "awaiting-merge"; /** Absent when `pullRequest` is off. */ pullRequest?: PublishResult } & ReviewedIssue)
+  | ({
+      outcome: "awaiting-merge";
+      /** Absent when `pullRequest` is off. */
+      pullRequest?: PublishResult;
+      /** Absent when `pullRequest` is off. */
+      bodyWriter?: BodyWriterResult;
+    } & ReviewedIssue)
   | ({ outcome: "spec-disagreement" } & ReviewedIssue)
   | ({ outcome: "gate-failed"; gate: GateResult } & ReviewedIssue)
   | ({ outcome: "critical-unfixed"; unfixedCritical: Finding[] } & ReviewedIssue)
@@ -112,7 +124,8 @@ async function runIssues(issues: IssueResult[], count: number, context: IssueCon
       if (issues.length < count) log(`Stopping the Run: Issue ${issue.id} has unfixed Critical Findings, so no further Issues are started.`);
       break;
     }
-    if (result.outcome === "paused") {
+    const atLimit = result.outcome === "paused" || (result.outcome === "awaiting-merge" && result.bodyWriter?.written === false && result.bodyWriter.limitReached);
+    if (atLimit) {
       if (issues.length < count) log(`Stopping the Run at the usage limit, so no further Issues are started.`);
       break;
     }
@@ -265,31 +278,104 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     return { outcome: "awaiting-merge", issue, branch, review, usage };
   }
 
-  const pullRequest = await publishPullRequest(issue, { gateOutput: gate.output, findings: review.findings, usage }, options);
+  const written = await writeBody(issue, review.findings, gate.output, usage, options);
+  const bodyInput: PullRequestBodyInput = { gateOutput: gate.output, findings: review.findings, usage };
+  const body = written.body !== undefined ? buildWrittenPullRequestBody(written.body, bodyInput) : buildPullRequestBody(bodyInput, written.note);
+  const pullRequest = await publishPullRequest(issue, body, options);
   // Even when publishing failed, the work passed the Gate and waits for the human: the branch is still there.
   await store.transition(issue, "awaiting-merge");
   const published = pullRequest.published
     ? `Pull Request: ${pullRequest.url}`
     : `Could not publish the Pull Request: ${pullRequest.error}`;
-  log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [published, report]));
-  return { outcome: "awaiting-merge", issue, branch, review, usage, pullRequest };
+  const bodyNote = written.result.written ? undefined : written.note;
+  log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [published, bodyNote, report]));
+  return { outcome: "awaiting-merge", issue, branch, review, usage, pullRequest, bodyWriter: written.result };
+}
+
+/**
+ * Calls the body writer once, adding its usage to `usage` and commenting it on the Issue. It never pauses the Issue:
+ * when it hits the usage limit, throws, or returns no body, the result says why, for the deterministic body to note.
+ * Whatever it did to the branch is undone, because the Gate passed on the branch as it was.
+ */
+async function writeBody(
+  issue: Issue,
+  findings: readonly Finding[],
+  gateOutput: string,
+  usage: IssueUsage,
+  { repoDir, agent, config, targetBranch, store, log }: IssueContext,
+): Promise<{ body?: string; result: BodyWriterResult; note?: string }> {
+  const { branch } = issue;
+  const tip = await git(repoDir, "rev-parse", branch);
+  let outcome: AgentResult | { kind: "failed"; error: string };
+  try {
+    outcome = await agent.run({
+      stage: "body-writer",
+      prompt: buildBodyWriterPrompt(issue, {
+        branch,
+        commits: await git(repoDir, "log", "--format=%h %s", `${targetBranch}..${branch}`),
+        diff: await git(repoDir, "diff", `${targetBranch}...${branch}`),
+        findings,
+        gateOutput: truncateStart(gateOutput.trim()),
+      }),
+      model: config.bodyWriter.model,
+      effort: config.bodyWriter.effort,
+      branch,
+      maxIterations: 1,
+    });
+  } catch (error) {
+    outcome = { kind: "failed", error: errorMessage(error) };
+  }
+  await restoreBranch(repoDir, branch, tip, issue, store, log);
+
+  if (outcome.kind !== "failed") {
+    usage["body-writer"] = outcome.usage;
+    await store.comment(issue, formatUsage({ "body-writer": outcome.usage }));
+  }
+  if (outcome.kind === "completed" && outcome.body !== undefined && outcome.body.trim() !== "") {
+    return { body: outcome.body, result: { written: true } };
+  }
+  const reason =
+    outcome.kind === "limit-reached"
+      ? "it hit the usage limit"
+      : outcome.kind === "failed"
+        ? `it failed: ${outcome.error}`
+        : "it returned no body";
+  const note = `The body writer did not write this body, because ${reason}. This is the plain body the host builds.`;
+  await store.comment(issue, `**Body writer**: ${note}`);
+  return { result: { written: false, reason, limitReached: outcome.kind === "limit-reached" }, note };
+}
+
+/**
+ * Puts `branch` back at `tip`, discarding any worktree Sandcastle preserved for it, in case the body writer
+ * committed or left changes despite being told not to. Logged and commented when there was something to undo.
+ */
+async function restoreBranch(
+  repoDir: string,
+  branch: string,
+  tip: string,
+  issue: Issue,
+  store: IssueStore,
+  log: (line: string) => void,
+): Promise<void> {
+  for (const dir of await preservedWorktrees(repoDir, branch)) await git(repoDir, "worktree", "remove", "--force", dir);
+  if ((await git(repoDir, "rev-parse", branch)) === tip) return;
+  await git(repoDir, "update-ref", `refs/heads/${branch}`, tip);
+  const warning = `The body writer changed ${branch}; it was put back to ${tip.slice(0, 7)}, the commit that passed the Gate.`;
+  log(`Warning: ${warning}`);
+  await store.comment(issue, `**Warning**: ${warning}`);
 }
 
 /**
  * Pushes the Issue's branch and opens its Pull Request against the target branch. The host does this, never the
  * sandbox. A failure is commented on the Issue and returned rather than thrown, so the Run carries on.
  */
-async function publishPullRequest(
-  issue: Issue,
-  body: Parameters<typeof buildPullRequestBody>[0],
-  { store, publisher, targetBranch }: IssueContext,
-): Promise<PublishResult> {
+async function publishPullRequest(issue: Issue, body: string, { store, publisher, targetBranch }: IssueContext): Promise<PublishResult> {
   try {
     const { url } = await publisher.publish({
       branch: issue.branch,
       base: targetBranch,
       title: `Issue ${issue.id}: ${issue.title}`,
-      body: buildPullRequestBody(body),
+      body,
     });
     await store.recordPullRequest(issue, url);
     await store.comment(issue, `**Pull Request opened**: ${url}`);
@@ -306,7 +392,7 @@ async function publishPullRequest(
  * committed, then it is paused if the session can be resumed, or else goes back to `ready-for-agent`
  * with an empty branch deleted. The error is then rethrown, ending the Run.
  */
-async function callAgent(issue: Issue, options: IssueContext, call: AgentCall): Promise<AgentResult> {
+async function callAgent(issue: Issue, options: IssueContext, call: AgentCall & { stage: PausableStage }): Promise<AgentResult> {
   try {
     return await options.agent.run(call);
   } catch (error) {
@@ -319,7 +405,7 @@ async function callAgent(issue: Issue, options: IssueContext, call: AgentCall): 
   }
 }
 
-async function recoverFromFailure(issue: Issue, stage: Stage, error: unknown, options: IssueContext): Promise<void> {
+async function recoverFromFailure(issue: Issue, stage: PausableStage, error: unknown, options: IssueContext): Promise<void> {
   const { repoDir, store, log, targetBranch } = options;
   const { branch } = issue;
   const stageName = STAGE_NAMES[stage];
@@ -365,19 +451,23 @@ async function pauseIssue(
  * under `.sandcastle/worktrees/`, then removes them so the branch can be checked out again.
  */
 async function commitWorkInProgress(repoDir: string, branch: string, message: string): Promise<void> {
-  const listing = await git(repoDir, "worktree", "list", "--porcelain");
-  const preserved = listing
-    .split(/\n\s*\n/)
-    .filter((entry) => entry.split("\n").includes(`branch refs/heads/${branch}`))
-    .map((entry) => /^worktree (.+)$/m.exec(entry)?.[1])
-    .filter((path): path is string => path !== undefined && path.includes("/.sandcastle/worktrees/"));
-  for (const dir of preserved) {
+  for (const dir of await preservedWorktrees(repoDir, branch)) {
     if (await git(dir, "status", "--porcelain")) {
       await git(dir, "add", "-A");
       await git(dir, "commit", "-q", "--no-verify", "-m", message);
     }
     await git(repoDir, "worktree", "remove", "--force", dir);
   }
+}
+
+/** The worktrees Sandcastle preserved for `branch` under `.sandcastle/worktrees/`. */
+async function preservedWorktrees(repoDir: string, branch: string): Promise<string[]> {
+  const listing = await git(repoDir, "worktree", "list", "--porcelain");
+  return listing
+    .split(/\n\s*\n/)
+    .filter((entry) => entry.split("\n").includes(`branch refs/heads/${branch}`))
+    .map((entry) => /^worktree (.+)$/m.exec(entry)?.[1])
+    .filter((path): path is string => path !== undefined && path.includes("/.sandcastle/worktrees/"));
 }
 
 /** Deletes `branch` when it has no commits beyond `target`. Returns whether it did. */

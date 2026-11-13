@@ -7,10 +7,17 @@ export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 export type Effort = (typeof EFFORTS)[number];
 
-export type Stage = "implementer" | "review-session";
+export type Stage = "implementer" | "review-session" | "body-writer";
+
+/** The stages an Issue can be paused in. The body writer never pauses: its Issue is published with a fallback body. */
+export type PausableStage = Exclude<Stage, "body-writer">;
 
 /** Each stage's name as the human reads it, in Run order. */
-export const STAGE_NAMES: Record<Stage, string> = { implementer: "Implementer", "review-session": "Review Session" };
+export const STAGE_NAMES: Record<Stage, string> = {
+  implementer: "Implementer",
+  "review-session": "Review Session",
+  "body-writer": "Body writer",
+};
 
 export interface AgentCall {
   /** Which stage of the Run this call is. */
@@ -53,7 +60,14 @@ export interface Review {
 
 /** `usage` is absent when the Agent could not report it; the Run carries on and shows it as unknown. */
 export type AgentResult =
-  | { kind: "completed"; usage?: TokenUsage; /** Present for a Review Session. */ review?: Review }
+  | {
+      kind: "completed";
+      usage?: TokenUsage;
+      /** Present for a Review Session. */
+      review?: Review;
+      /** Present for the body writer: the Pull Request body it wrote. */
+      body?: string;
+    }
   | { kind: "limit-reached"; sessionId: string; usage?: TokenUsage };
 
 export interface Agent {

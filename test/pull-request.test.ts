@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runWorkflow, type Config } from "../src/index.js";
 import { configWithGate, createTempRepo, fakeAgent, fakePublisher, git, issueFile, useTempHome, type TempRepo } from "./helpers.js";
@@ -30,18 +32,21 @@ describe("Publishing a Pull Request", () => {
   });
   afterEach(() => repo.cleanup());
 
-  it("opens a Pull Request against the target branch with the deterministic body and records its URL", async () => {
-    const publisher = fakePublisher();
-    const agent = fakeAgent(repo.dir, {
+  const findings = {
+    review: {
       review: {
-        review: {
-          findings: [
-            { severity: "critical", fixed: true, description: "FIXED-CRITICAL-MARKER" },
-            { severity: "non-critical", fixed: false, description: "NIT-MARKER" },
-          ],
-        },
+        findings: [
+          { severity: "critical" as const, fixed: true, description: "FIXED-CRITICAL-MARKER" },
+          { severity: "non-critical" as const, fixed: false, description: "NIT-MARKER" },
+        ],
       },
-    });
+    },
+  };
+  const WRITTEN = "## Summary\n\nWRITTEN-SUMMARY-MARKER\n\n## Evidence\n\nWRITTEN-EVIDENCE-MARKER\n\n## Merge Danger\n\n**Door:** two-way\n\n**Blast Radius:** small";
+
+  it("opens a Pull Request with the written body, followed by the host's Findings and usage sections, and records its URL", async () => {
+    const publisher = fakePublisher();
+    const agent = fakeAgent(repo.dir, { ...findings, body: WRITTEN });
 
     const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: withPullRequests(["echo GATE-EVIDENCE-MARKER"]), log });
 
@@ -52,14 +57,20 @@ describe("Publishing a Pull Request", () => {
     expect(request.title).toBe("Issue 01: First slice");
 
     const { body } = request;
-    expect(body).toMatch(/^## Evidence\n/);
-    expect(body).toContain("$ echo GATE-EVIDENCE-MARKER\nGATE-EVIDENCE-MARKER\n(exit code 0)");
+    expect(body.startsWith(WRITTEN)).toBe(true);
+    // The written Evidence replaces the Gate transcript, and nothing says the body was not written.
+    expect(body).not.toContain("(exit code 0)");
+    expect(body).not.toContain("Note:");
     expect(body).toMatch(/## Fixed during review\n\n- FIXED-CRITICAL-MARKER/);
     expect(body).toMatch(/## Non-critical Findings\n\n- NIT-MARKER/);
-    expect(body).toMatch(/<details>\n<summary>Token usage<\/summary>\n\nUsage: Implementer 100 input, 50 output.*<\/details>/s);
+    expect(body).toMatch(
+      /<details>\n<summary>Token usage<\/summary>\n\nUsage: Implementer 100 input, 50 output.*; Body writer 100 input, 50 output.*<\/details>/s,
+    );
     // The sections come in the order the human reads them.
-    const order = ["## Evidence", "## Fixed during review", "## Non-critical Findings", "<details>"].map((s) => body.indexOf(s));
+    const order = ["## Summary", "## Merge Danger", "## Fixed during review", "## Non-critical Findings", "<details>"].map((s) => body.indexOf(s));
     expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(result.issues[0]).toMatchObject({ bodyWriter: { written: true } });
+    expect(commentsOf("01-first.md")).toMatch(/Usage: Body writer 100 input, 50 output/);
 
     const url = "https://github.com/owner/repo/pull/1";
     expect(result.issues[0]).toMatchObject({ outcome: "awaiting-merge", pullRequest: { published: true, url } });
@@ -67,6 +78,119 @@ describe("Publishing a Pull Request", () => {
     expect(headerOf("01-first.md")).toMatch(/^Status: awaiting-merge\nPull Request: https:\/\/github\.com\/owner\/repo\/pull\/1$/m);
     expect(commentsOf("01-first.md")).toContain(url);
     expect(output.join("\n")).toContain(`Pull Request: ${url}`);
+  });
+
+  it("runs the body writer once, after the Gate, with its own model and effort, defaulting to Sonnet at low effort", async () => {
+    const gateRan = join(repo.dir, "gate-ran");
+    const seenGate: boolean[] = [];
+    const agent = fakeAgent(repo.dir, { body: WRITTEN, onCall: (call) => call.stage === "body-writer" && seenGate.push(existsSync(gateRan)) });
+
+    await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher(), config: withPullRequests([`touch ${gateRan}`]), log });
+
+    expect(agent.calls.map((c) => [c.stage, c.model, c.effort, c.maxIterations])).toEqual([
+      ["implementer", "claude-opus-5-5", "medium", 3],
+      ["review-session", "claude-opus-5-5", "medium", 1],
+      ["body-writer", "claude-sonnet-5-5", "low", 1],
+    ]);
+    expect(seenGate).toEqual([true]);
+    const call = agent.calls[2]!;
+    expect(call.branch).toBe("issue/01-first");
+    expect(call.resumeSession).toBeUndefined();
+  });
+
+  it("runs the body writer with the model and effort the config sets, whatever the Issue's Model line says", async () => {
+    repo.write(`${ISSUES}/01-first.md`, issueFile({ title: "01: First slice", status: "ready-for-agent", extra: "Model: claude-haiku-5-5\n\nDo it." }));
+    repo.commitAll("cheap issue");
+    const agent = fakeAgent(repo.dir, { body: WRITTEN });
+    const config = { ...withPullRequests(["true"]), bodyWriter: { model: "claude-opus-5-5", effort: "high" as const } };
+
+    await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher(), config, log });
+
+    expect(agent.calls.map((c) => [c.stage, c.model, c.effort])).toEqual([
+      ["implementer", "claude-haiku-5-5", "medium"],
+      ["review-session", "claude-haiku-5-5", "medium"],
+      ["body-writer", "claude-opus-5-5", "high"],
+    ]);
+  });
+
+  it("gives the body writer the Issue, Spec, Findings, Gate output, commits and diff", async () => {
+    const agent = fakeAgent(repo.dir, { ...findings, body: WRITTEN, files: { "feature.txt": "DIFF-MARKER\n" } });
+
+    await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher(), config: withPullRequests(["echo GATE-OUTPUT-MARKER"]), log });
+
+    const { prompt } = agent.calls.find((c) => c.stage === "body-writer")!;
+    for (const marker of ["01: First slice", "Spec body.", "FIXED-CRITICAL-MARKER", "NIT-MARKER", "GATE-OUTPUT-MARKER", "fake agent: implement issue", "+DIFF-MARKER"]) {
+      expect(prompt).toContain(marker);
+    }
+  });
+
+  it("publishes the plain body with a note when the body writer returns no body", async () => {
+    const publisher = fakePublisher();
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir, findings), publisher, config: withPullRequests(["echo GATE-EVIDENCE-MARKER"]), log });
+
+    const { body } = publisher.published[0]!;
+    expect(body).toMatch(/^> \*\*Note:\*\* The body writer did not write this body, because it returned no body\./);
+    expect(body).toContain("## Evidence\n\nThe Gate passed.");
+    expect(body).toContain("$ echo GATE-EVIDENCE-MARKER\nGATE-EVIDENCE-MARKER\n(exit code 0)");
+    expect(body).toMatch(/## Fixed during review\n\n- FIXED-CRITICAL-MARKER/);
+    expect(body).toMatch(/## Non-critical Findings\n\n- NIT-MARKER/);
+    expect(body).toMatch(/Usage: Implementer .*; Body writer 100 input/);
+    expect(result.issues[0]).toMatchObject({ outcome: "awaiting-merge", bodyWriter: { written: false, limitReached: false } });
+    expect(statusOf("01-first.md")).toBe("awaiting-merge");
+  });
+
+  it("publishes the plain body when the body writer hits the usage limit, without pausing the Issue, and stops the Run", async () => {
+    const publisher = fakePublisher();
+    const agent = fakeAgent(repo.dir, { ...findings, limit: { stage: "body-writer", sessionId: "body-session" } });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: withPullRequests(["true"]), count: 2, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["01", "awaiting-merge"]]);
+    expect(result.issues[0]).toMatchObject({ pullRequest: { published: true }, bodyWriter: { written: false, limitReached: true } });
+    expect(publisher.published).toHaveLength(1);
+    const { body } = publisher.published[0]!;
+    expect(body).toMatch(/^> \*\*Note:\*\* The body writer did not write this body, because it hit the usage limit\./);
+    expect(body).toContain("## Evidence");
+    expect(body).toMatch(/## Non-critical Findings\n\n- NIT-MARKER/);
+
+    expect(statusOf("01-first.md")).toBe("awaiting-merge");
+    expect(read("01-first.md")).not.toContain("Paused");
+    expect(commentsOf("01-first.md")).toContain("usage limit");
+    expect(statusOf("02-second.md")).toBe("ready-for-agent");
+    expect(git(repo.dir, "branch", "--list", "issue/02-second")).toBe("");
+    expect(output.join("\n")).toMatch(/Stopping the Run at the usage limit/);
+    expect(agent.calls.filter((c) => c.stage === "implementer")).toHaveLength(1);
+  });
+
+  it("publishes the plain body when the body writer throws, without pausing the Issue, and carries on with the next Issue", async () => {
+    const publisher = fakePublisher();
+    const agent = fakeAgent(repo.dir, { fail: { stage: "body-writer", sessionId: "resumable-but-unused" } });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: withPullRequests(["true"]), count: 2, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["01", "awaiting-merge"],
+      ["02", "awaiting-merge"],
+    ]);
+    expect(publisher.published).toHaveLength(2);
+    expect(publisher.published[0]!.body).toMatch(/^> \*\*Note:\*\* The body writer did not write this body, because it failed: fake agent: sandbox error\./);
+    for (const file of ["01-first.md", "02-second.md"]) {
+      expect(statusOf(file)).toBe("awaiting-merge");
+      expect(read(file)).not.toContain("Paused");
+    }
+    expect(output.join("\n")).toMatch(/Issue 01 is awaiting merge\.[\s\S]*body writer did not write this body/);
+  });
+
+  it("puts the branch back to the commit that passed the Gate when the body writer commits to it", async () => {
+    const publisher = fakePublisher();
+    const agent = fakeAgent(repo.dir, { body: WRITTEN, bodyWriterFiles: { "sneaky.txt": "not gated\n" } });
+
+    await runWorkflow({ repoDir: repo.dir, agent, publisher, config: withPullRequests(["true"]), log });
+
+    expect(git(repo.dir, "log", "--format=%s", "main..issue/01-first")).toBe("fake agent: implement issue");
+    expect(output.join("\n")).toMatch(/Warning: The body writer changed issue\/01-first/);
+    expect(publisher.published).toHaveLength(1);
   });
 
   it("leaves empty sections out of the body", async () => {
@@ -106,13 +230,15 @@ describe("Publishing a Pull Request", () => {
     expect(output.join("\n")).toMatch(/Issue 01 is awaiting merge\.[\s\S]*Could not publish the Pull Request: PUSH-REJECTED-MARKER/);
   });
 
-  it("publishes nothing and records no Pull Request when pullRequest is off", async () => {
+  it("publishes nothing, records no Pull Request and calls no body writer when pullRequest is off", async () => {
     const publisher = fakePublisher();
 
-    const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: configWithGate(["true"]), log });
+    const agent = fakeAgent(repo.dir);
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: configWithGate(["true"]), log });
 
     expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
     expect(result.issues[0]).not.toHaveProperty("pullRequest");
+    expect(agent.calls.map((c) => c.stage)).toEqual(["implementer", "review-session"]);
     expect(publisher.published).toEqual([]);
     expect(read("01-first.md")).not.toContain("Pull Request");
     expect(output.join("\n")).not.toContain("Pull Request");

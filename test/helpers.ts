@@ -111,6 +111,10 @@ export function fakeAgent(
   opts: {
     files?: Record<string, string>;
     review?: ReviewScript;
+    /** The Pull Request body the body writer returns. None by default, as when its output can't be read. */
+    body?: string;
+    /** Files the body writer commits, though it is told never to. None by default. */
+    bodyWriterFiles?: Record<string, string>;
     onCall?: (call: AgentCall) => void;
     /** Token usage each stage reports; "missing" reports none. Defaults to 100 in, 50 out. */
     usage?: Partial<Record<Stage, TokenUsage | "missing">>;
@@ -143,6 +147,11 @@ export function fakeAgent(
       if (call.stage === "implementer") {
         commitOnBranch(repoDir, call.branch, opts.files ?? { "feature.txt": "implemented\n" }, "fake agent: implement issue");
         return { kind: "completed", usage };
+      }
+      if (call.stage === "body-writer") {
+        const files = opts.bodyWriterFiles ?? {};
+        if (Object.keys(files).length > 0) commitOnBranch(repoDir, call.branch, files, "fake agent: body writer commit");
+        return { kind: "completed", usage, body: opts.body };
       }
       const files = opts.review?.files ?? {};
       if (Object.keys(files).length > 0) commitOnBranch(repoDir, call.branch, files, "fake agent: fix critical finding");

@@ -22,6 +22,8 @@ export interface Config {
   sandbox: SandboxChoice;
   /** Publish each Issue that passes the Gate as a Pull Request. Off unless the project opts in. */
   pullRequest: boolean;
+  /** The agent that writes a Pull Request's body, when `pullRequest` is on. An Issue's `Model:` line does not apply. */
+  bodyWriter: { model: string; effort: Effort };
 }
 
 export const DEFAULT_CONFIG: Omit<Config, "gate"> = {
@@ -30,6 +32,8 @@ export const DEFAULT_CONFIG: Omit<Config, "gate"> = {
   maxIterations: { implementer: 3, reviewSession: 1 },
   sandbox: "native",
   pullRequest: false,
+  // Summarising a change that already passed the Gate needs no deep reasoning.
+  bodyWriter: { model: "claude-sonnet-5-5", effort: "low" },
 };
 
 /** Reads and validates `sandcastle-pro.config.json` in `repoDir`. Throws an error naming the problem. */
@@ -50,19 +54,22 @@ function parseConfig(text: string): Config {
     throw configError(`is not valid JSON: ${(error as Error).message}`);
   }
   if (!isObject(raw)) throw configError("must be a JSON object.");
-  rejectUnknownKeys(raw, ["gate", "model", "effort", "maxIterations", "sandbox", "pullRequest"], "");
+  rejectUnknownKeys(raw, ["gate", "model", "effort", "maxIterations", "sandbox", "pullRequest", "bodyWriter"], "");
 
-  const { gate, model, effort, maxIterations, sandbox, pullRequest } = raw;
+  const { gate, model, effort, maxIterations, sandbox, pullRequest, bodyWriter } = raw;
   if (gate === undefined) throw configError(`is missing "gate": list the Gate commands, e.g. ["npm test"].`);
   if (!isGate(gate)) {
     throw configError(`"gate" must be a non-empty list of command strings, got ${JSON.stringify(gate)}.`);
   }
-  if (model !== undefined && (typeof model !== "string" || model.trim() === "")) {
-    throw configError(`"model" must be a non-empty string, got ${JSON.stringify(model)}.`);
+  checkModel(model, "model");
+  checkEffort(effort, "effort");
+  if (bodyWriter !== undefined && !isObject(bodyWriter)) {
+    throw configError(`"bodyWriter" must be an object, got ${JSON.stringify(bodyWriter)}.`);
   }
-  if (effort !== undefined && !EFFORTS.includes(effort as Effort)) {
-    throw configError(`"effort" must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(effort)}.`);
-  }
+  const writer = bodyWriter ?? {};
+  rejectUnknownKeys(writer, ["model", "effort"], "bodyWriter.");
+  checkModel(writer.model, "bodyWriter.model");
+  checkEffort(writer.effort, "bodyWriter.effort");
   if (sandbox !== undefined && !SANDBOXES.includes(sandbox as SandboxChoice)) {
     throw configError(`"sandbox" must be one of ${SANDBOXES.join(", ")}, got ${JSON.stringify(sandbox)}.`);
   }
@@ -87,7 +94,20 @@ function parseConfig(text: string): Config {
     maxIterations: { ...DEFAULT_CONFIG.maxIterations, ...(limits as Partial<Config["maxIterations"]>) },
     sandbox: (sandbox as SandboxChoice | undefined) ?? DEFAULT_CONFIG.sandbox,
     pullRequest: (pullRequest as boolean | undefined) ?? DEFAULT_CONFIG.pullRequest,
+    bodyWriter: { ...DEFAULT_CONFIG.bodyWriter, ...(writer as Partial<Config["bodyWriter"]>) },
   };
+}
+
+function checkModel(model: unknown, key: string): void {
+  if (model !== undefined && (typeof model !== "string" || model.trim() === "")) {
+    throw configError(`"${key}" must be a non-empty string, got ${JSON.stringify(model)}.`);
+  }
+}
+
+function checkEffort(effort: unknown, key: string): void {
+  if (effort !== undefined && !EFFORTS.includes(effort as Effort)) {
+    throw configError(`"${key}" must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(effort)}.`);
+  }
 }
 
 function rejectUnknownKeys(object: Record<string, unknown>, known: readonly string[], prefix: string): void {

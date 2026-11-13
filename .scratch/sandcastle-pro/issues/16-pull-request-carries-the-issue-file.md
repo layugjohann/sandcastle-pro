@@ -1,6 +1,6 @@
 # 16: The Pull Request carries the Issue file, and the Run catches up after a merge
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/19
 Blocked by: 14
 

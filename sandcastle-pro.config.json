@@ -1,0 +1,11 @@
+{
+  "gate": [
+    "npm ci --no-audit --no-fund",
+    "npm run typecheck",
+    "npm run test"
+  ],
+  "model": "claude-opus-5-5",
+  "effort": "medium",
+  "sandbox": "native",
+  "pullRequest": true
+}

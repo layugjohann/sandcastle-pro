@@ -1,2 +1,7 @@
 node_modules/
 dist/
+
+# sandcastle-pro
+.sandcastle/.env
+.sandcastle/logs/
+.sandcastle/worktrees/

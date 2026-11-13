@@ -50,7 +50,6 @@ Usage: Implementer 54 input, 28,120 output, 82,660 cache creation, 1,918,828 cac
 - Issue 16 says the host copies the Issue file from the working copy onto the Issue branch. The Implementer ticks the acceptance boxes on the branch and the working copy never has those ticks, so the 'Record Issue NN's Run comments' commit un-ticks every box the Implementer ticked and the Pull Request shows them unticked. Merging the comments into the branch's copy, instead of overwriting it, would keep both.
 
 **Spec disagreement resolved:** the Review Session was right. The first box now merges the branch's copy with the working copy's header lines and Run comments, so the ticked boxes survive. Everything else on `issue/16-pull-request-carries-the-issue-file` (commit `778087c`) stands; only the Issue-file step needs to change. Also consider the first Non-critical Finding: after a failed publish, the Issue-file commit stays on the branch.
-**Spec disagreement resolved:** the Review Session was right. The first box now merges the branch's copy with the working copy's header lines and Run comments, so the ticked boxes survive. Everything else on `issue/16-pull-request-carries-the-issue-file` (commit `778087c`) stands; only the Issue-file step needs to change. Also consider the first Non-critical Finding: after a failed publish, the Issue-file commit stays on the branch.
 
 Usage: Implementer 58 input, 17,534 output, 68,915 cache creation, 1,586,601 cache read; Review Session 8 input, 4,649 output, 38,563 cache creation, 144,704 cache read.
 

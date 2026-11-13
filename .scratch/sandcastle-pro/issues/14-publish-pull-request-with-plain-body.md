@@ -29,3 +29,17 @@ Spec: `.scratch/sandcastle-pro/spec.md`, as amended by `docs/adr/0003-publish-ea
   - `pullRequest` off gives today's behaviour;
   - a Pull Request reported `MERGED` makes the Issue `done`.
 - [x] Config parsing tests cover the new setting.
+
+## Comments
+
+Usage: Implementer 50 input, 21,807 output, 79,069 cache creation, 1,663,889 cache read; Review Session 6 input, 2,574 output, 37,619 cache creation, 101,147 cache read.
+
+**Review Session: Non-critical Findings**
+
+- src/run-workflow.ts publishPullRequest types its body parameter as `Parameters<typeof buildPullRequestBody>[0]` instead of using the exported `PullRequestBodyInput` type.
+- publishPullRequest: if `store.comment` throws after `store.recordPullRequest` succeeded, the catch reports 'Could not publish the Pull Request' although the Pull Request was opened and its URL recorded.
+- markMergedIssuesDone silently keeps an Issue whose Pull Request is CLOSED (not merged) in awaiting-merge on every Run, with nothing logged to tell the human.
+- pull-request-body.ts truncation note says 'the full output is in the Gate log', but that log is only on the host's disk and the Pull Request body does not link it.
+- markMergedIssuesDone queries `gh` for Issues with a `Pull Request:` line even when `pullRequest` is off in the config, so a project without `gh` would log warnings for such Issues.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-14-2026-11-13T15-24-32-173Z.log`).

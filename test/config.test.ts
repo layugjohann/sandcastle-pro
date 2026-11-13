@@ -76,6 +76,8 @@ describe("Project config", () => {
     ["zero iterations", `{"gate": ["true"], "maxIterations": {"implementer": 0}}`, /"maxIterations.implementer" must be a positive whole number, got 0/],
     ["misspelt key", `{"gate": ["true"], "modle": "x"}`, /unknown key "modle"/],
     ["unknown sandbox", `{"gate": ["true"], "sandbox": "vm"}`, /"sandbox" must be one of native, docker, got "vm"/],
+    ["pullRequest not a boolean", `{"gate": ["true"], "pullRequest": "yes"}`, /"pullRequest" must be true or false, got "yes"/],
+    ["misspelt pullRequest", `{"gate": ["true"], "pullRequests": true}`, /unknown key "pullRequests"/],
     ["misspelt limit", `{"gate": ["true"], "maxIterations": {"review": 2}}`, /unknown key "maxIterations.review"/],
   ])("names the problem when the config has %s", async (_case, text, problem) => {
     repo.write(CONFIG, text);
@@ -95,5 +97,16 @@ describe("Project config", () => {
 
     repo.write(CONFIG, JSON.stringify({ gate: ["true"], sandbox: "docker" }));
     expect((await loadConfig(repo.dir)).sandbox).toBe("docker");
+  });
+
+  it("leaves Pull Requests off unless the config turns them on", async () => {
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"] }));
+    expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: true }));
+    expect((await loadConfig(repo.dir)).pullRequest).toBe(true);
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: false }));
+    expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
   });
 });

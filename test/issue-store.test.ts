@@ -47,6 +47,35 @@ describe("Issue Store", () => {
     expect(text.indexOf("second note")).toBeGreaterThan(text.indexOf("first note"));
   });
 
+  it("records a Pull Request line under Status, replaces an earlier one, and ignores one under Comments", async () => {
+    repo.write(`${ISSUES}/01-a.md`, issueFile({ title: "01: A", status: "awaiting-merge" }));
+    const store = createIssueStore(repo.dir);
+    const [issue] = await store.awaitingMerge();
+    expect(issue!.pullRequest).toBeUndefined();
+
+    await store.comment(issue!, "Pull Request: https://example.com/in-a-comment");
+    expect((await store.awaitingMerge())[0]!.pullRequest).toBeUndefined();
+
+    await store.recordPullRequest(issue!, "https://github.com/o/r/pull/1");
+    await store.recordPullRequest(issue!, "https://github.com/o/r/pull/2");
+
+    const text = repo.read(`${ISSUES}/01-a.md`);
+    expect(text).toMatch(/^Status: awaiting-merge\nPull Request: https:\/\/github\.com\/o\/r\/pull\/2$/m);
+    expect(text).not.toContain("pull/1");
+    expect(text).toContain("Pull Request: https://example.com/in-a-comment");
+    expect((await store.awaitingMerge())[0]!.pullRequest).toBe("https://github.com/o/r/pull/2");
+  });
+
+  it("takes the title from the heading without its number", async () => {
+    repo.write(`${ISSUES}/01-a.md`, "# 01: Do the thing\n\nStatus: ready-for-agent\n");
+    repo.write(`${ISSUES}/02-no-heading.md`, "Status: ready-for-agent\n");
+    const store = createIssueStore(repo.dir);
+
+    expect((await store.next())?.title).toBe("Do the thing");
+    await store.transition((await store.next())!, "done");
+    expect((await store.next())?.title).toBe("no heading");
+  });
+
   it("transitions an Issue that has no Status line by adding one", async () => {
     repo.write(`${ISSUES}/01-a.md`, "# 01: A\n\nStatus: ready-for-agent\n\nBody\n");
     const store = createIssueStore(repo.dir);

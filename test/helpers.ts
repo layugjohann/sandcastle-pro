@@ -10,6 +10,9 @@ import {
   type AgentCall,
   type AgentResult,
   type Config,
+  type Publisher,
+  type PullRequestRequest,
+  type PullRequestState,
   type Review,
   type Stage,
   type TokenUsage,
@@ -176,6 +179,35 @@ function commitOnBranch(repoDir: string, branch: string, files: Record<string, s
   } finally {
     git(repoDir, "worktree", "remove", "--force", worktree);
   }
+}
+
+export interface FakePublisher extends Publisher {
+  published: PullRequestRequest[];
+  stateLookups: string[];
+}
+
+/**
+ * A scripted Publisher that never pushes or calls `gh`. Each published Pull Request gets the next number;
+ * `fail` makes publishing throw. `states` maps a URL to the state GitHub reports; a URL not in it makes the lookup throw.
+ */
+export function fakePublisher(opts: { fail?: string; states?: Record<string, PullRequestState> } = {}): FakePublisher {
+  const published: PullRequestRequest[] = [];
+  const stateLookups: string[] = [];
+  return {
+    published,
+    stateLookups,
+    async publish(request) {
+      if (opts.fail) throw new Error(opts.fail);
+      published.push(request);
+      return { url: `https://github.com/owner/repo/pull/${published.length}` };
+    },
+    async state(url) {
+      stateLookups.push(url);
+      const state = opts.states?.[url];
+      if (!state) throw new Error(`gh: could not resolve ${url}`);
+      return state;
+    },
+  };
 }
 
 /** A project config with the defaults and the given Gate commands. */

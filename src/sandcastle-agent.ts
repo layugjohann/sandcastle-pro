@@ -98,7 +98,8 @@ function watchStream(provider: AgentProvider): StreamWatch {
 }
 
 /**
- * Claude Code keeps its temp files in `/tmp/claude-<uid>`, which the native sandbox can't write to.
+ * Claude Code keeps its temp files in `/tmp/claude-<uid>`, which the native sandbox can't write to, and on macOS
+ * a bare `mktemp` ignores `TMPDIR` and uses the per-user temp dir, which Seatbelt also blocks.
  * Point it at the sandbox's own private `TMPDIR` instead; the shell expands it inside the sandbox.
  *
  * Claude also exits non-zero after reporting an error in its stream, and Sandcastle fails on the exit code
@@ -111,7 +112,7 @@ function sandboxedClaudeCode(provider: AgentProvider): AgentProvider {
     buildPrintCommand(options) {
       const built = provider.buildPrintCommand(options);
       const command = [
-        `out=$(mktemp) && code_file=$(mktemp) || exit 1`,
+        `tmp="\${TMPDIR:-/tmp}"; out=$(mktemp "$tmp/sandcastle-out.XXXXXX") && code_file=$(mktemp "$tmp/sandcastle-code.XXXXXX") || exit 1`,
         `{ CLAUDE_CODE_TMPDIR="$TMPDIR" ${built.command}; echo $? > "$code_file"; } | tee "$out"`,
         `code=$(cat "$code_file"); code=\${code:-1}`,
         `if [ "$code" -ne 0 ] && grep -q '^{"type":"result".*"is_error":true' "$out"; then code=0; fi`,

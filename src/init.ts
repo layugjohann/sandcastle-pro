@@ -62,6 +62,11 @@ export async function initProject({ repoDir, gate, sandbox, platform = process.p
   log(`     (see ${ENV_EXAMPLE_FILE}; set ${API_KEY} there instead to bill the API).`);
   log(`  2. Add rules for this codebase to ${PROJECT_CODING_STANDARDS}.`);
   log("  3. Write Issues under .scratch/<feature>/issues/, then run `npx sandcastle-pro run`.");
+  if (sandbox === "native" && platform === "darwin") {
+    log("");
+    log("Note: Seatbelt can't run Apple's /usr/bin/git (its xcrun shim is blocked). Put another git first in PATH,");
+    log("      e.g. Homebrew's: `brew install git`; check with `which git`.");
+  }
 }
 
 /**

@@ -745,6 +745,8 @@ describe("Pause and resume at the usage limit", () => {
 
     expect(statusOf(repo, "01-first.md")).toBe("ready-for-agent");
     expect(git(repo.dir, "branch", "--list", "issue/01-first")).toBe("");
+    expect(output.join("\n")).toContain("Issue 01 is back to ready-for-agent: the Implementer failed.");
+    expect(output.join("\n")).not.toContain("Could not restore");
   });
 
   it("commits the work in progress and keeps the branch when a failed Agent call left some", async () => {

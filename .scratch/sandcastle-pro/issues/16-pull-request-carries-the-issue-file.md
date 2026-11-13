@@ -1,6 +1,7 @@
 # 16: The Pull Request carries the Issue file, and the Run catches up after a merge
 
-Status: ready-for-agent
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/19
 Blocked by: 14
 
 Spec: `.scratch/sandcastle-pro/spec.md`, as amended by `docs/adr/0003-publish-each-issue-as-a-pull-request.md`
@@ -49,3 +50,18 @@ Usage: Implementer 54 input, 28,120 output, 82,660 cache creation, 1,918,828 cac
 - Issue 16 says the host copies the Issue file from the working copy onto the Issue branch. The Implementer ticks the acceptance boxes on the branch and the working copy never has those ticks, so the 'Record Issue NN's Run comments' commit un-ticks every box the Implementer ticked and the Pull Request shows them unticked. Merging the comments into the branch's copy, instead of overwriting it, would keep both.
 
 **Spec disagreement resolved:** the Review Session was right. The first box now merges the branch's copy with the working copy's header lines and Run comments, so the ticked boxes survive. Everything else on `issue/16-pull-request-carries-the-issue-file` (commit `778087c`) stands; only the Issue-file step needs to change. Also consider the first Non-critical Finding: after a failed publish, the Issue-file commit stays on the branch.
+**Spec disagreement resolved:** the Review Session was right. The first box now merges the branch's copy with the working copy's header lines and Run comments, so the ticked boxes survive. Everything else on `issue/16-pull-request-carries-the-issue-file` (commit `778087c`) stands; only the Issue-file step needs to change. Also consider the first Non-critical Finding: after a failed publish, the Issue-file commit stays on the branch.
+
+Usage: Implementer 58 input, 17,534 output, 68,915 cache creation, 1,586,601 cache read; Review Session 8 input, 4,649 output, 38,563 cache creation, 144,704 cache read.
+
+**Review Session: Non-critical Findings**
+
+- If the follow-up push fails, or the Issue was published before this change, the working copy's Issue file never matches the branch tip. The Issue then stays awaiting-merge with the same warning every Run, and the warning does not say how to recover.
+- If the Issue file was never committed on the target branch, `git checkout HEAD -- file` fails in pullMergedIssueFiles, so catch-up warns 'could not discard its local edit'. An identical untracked file could be removed safely before the pull instead.
+- The error mergeIssueFile throws when the working copy's comments do not extend the committed ones does not name the Issue file. It reaches the human only inside the generic 'Could not publish the Pull Request' comment.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-16-2026-11-13T16-39-21-762Z.log`).
+
+Usage: Body writer 2 input, 1,371 output, 33,395 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/19

@@ -271,3 +271,47 @@ function insertAfterTitle(text: string, line: string): string {
   lines.splice(titleIndex + 1, 0, "", line);
   return lines.join("\n");
 }
+
+/**
+ * Merges the working copy's Issue file into the Issue branch's copy, never overwriting the branch's copy: the result
+ * is `branchCopy` (with the Implementer's ticked boxes and any comments of its own), with the working copy's
+ * `Status:` and `Pull Request:` lines, followed by the comments the working copy added since `base`. `base` is the
+ * file both last agreed on: the target branch's committed version, or the file last merged onto the branch.
+ * Throws when the working copy's comments do not extend `base`'s, since the added comments can't be told apart.
+ */
+export function mergeIssueFile(branchCopy: string, working: string, base: string): string {
+  const workingComments = commentsOf(working).trimEnd();
+  const baseComments = commentsOf(base).trimEnd();
+  if (!workingComments.startsWith(baseComments)) {
+    throw new Error("the working copy's Issue file has comments that do not extend the committed ones, so its Run comments can't be told apart");
+  }
+  const added = workingComments.slice(baseComments.length).trim();
+
+  const header = headerOf(working);
+  let merged = branchCopy;
+  const status = STATUS_LINE.exec(header)?.[0];
+  if (status !== undefined) merged = withHeaderLine(merged, STATUS_LINE, status, (h) => insertAfterTitle(h, status));
+  const pullRequest = PULL_REQUEST_LINE.exec(header)?.[0];
+  if (pullRequest !== undefined) {
+    merged = withHeaderLine(merged, PULL_REQUEST_LINE, pullRequest, (h) =>
+      STATUS_LINE.test(h) ? h.replace(STATUS_LINE, (line) => `${line}\n${pullRequest}`) : insertAfterTitle(h, pullRequest),
+    );
+  }
+  if (added === "") return merged;
+  merged = merged.replace(/\s*$/, "\n");
+  if (!/^## Comments[ \t]*$/m.test(merged)) merged += "\n## Comments\n";
+  return `${merged}\n${added}\n`;
+}
+
+/** The text below `## Comments`, or empty when there is no such heading. */
+function commentsOf(text: string): string {
+  const match = /^## Comments[ \t]*$/m.exec(text);
+  return match ? text.slice(match.index + match[0].length) : "";
+}
+
+/** `text` with the header line matching `pattern` replaced by `line`, or added by `insert` when it has none. */
+function withHeaderLine(text: string, pattern: RegExp, line: string, insert: (header: string) => string): string {
+  const header = headerOf(text);
+  const updated = pattern.test(header) ? header.replace(pattern, () => line) : insert(header);
+  return updated + text.slice(header.length);
+}

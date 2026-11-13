@@ -483,6 +483,56 @@ describe("The Issue file on the Pull Request", () => {
     expect(output.join("\n")).toContain(`${FILE} was left as it is and the Issue stays awaiting-merge: \`git pull --ff-only origin main\` failed`);
   });
 
+  describe("when the Implementer ticks the Issue's boxes on its branch", () => {
+    const issueWithBoxes = (box: string) =>
+      issueFile({ title: "01: First slice", status: "ready-for-agent", extra: `- [${box}] Do the thing.\n\n## Comments\n\nAn earlier comment.` });
+    const tickingAgent = () =>
+      fakeAgent(repo.dir, {
+        files: { "feature.txt": "implemented\n", [FILE]: `${issueWithBoxes("x")}\nIMPLEMENTER NOTE\n` },
+      });
+
+    beforeEach(() => {
+      repo.write(FILE, issueWithBoxes(" "));
+      repo.commitAll("add boxes");
+      git(repo.dir, "push", "-q", "origin", "main");
+    });
+
+    it("merges the Run's header lines and comments into the branch's copy, keeping its ticked boxes", async () => {
+      await runWorkflow({ repoDir: repo.dir, agent: tickingAgent(), publisher: fakePublisher({ pushFrom: repo.dir }), config, log });
+
+      const opened = git(repo.dir, "show", `issue/01-first~1:${FILE}`);
+      expect(opened).toContain("- [x] Do the thing.");
+      expect(opened).toContain("IMPLEMENTER NOTE");
+      expect(opened).toMatch(/An earlier comment\.[\s\S]*IMPLEMENTER NOTE[\s\S]*Usage: Implementer[\s\S]*\*\*Gate passed\*\*/);
+      expect(opened.match(/An earlier comment\./g)).toHaveLength(1);
+      const tip = git(repo.dir, "show", `issue/01-first:${FILE}`);
+      expect(tip).toContain("- [x] Do the thing.");
+      expect(tip).toMatch(/^Status: awaiting-merge\nPull Request: https:\/\/github\.com\/owner\/repo\/pull\/1$/m);
+      expect(tip.match(/\*\*Gate passed\*\*/g)).toHaveLength(1);
+      expect(tip).toContain(`**Pull Request opened**: ${URL}`);
+      expect(git(repo.dir, "hash-object", FILE)).toBe(git(repo.dir, "rev-parse", `issue/01-first:${FILE}`));
+    });
+
+    it("pulls the target branch and marks the Issue done after the merge, without an error from git", async () => {
+      await runWorkflow({ repoDir: repo.dir, agent: tickingAgent(), publisher: fakePublisher({ pushFrom: repo.dir }), config, log });
+      mergeOnOrigin();
+
+      await runAfterMerge();
+
+      expect(statusOf()).toBe("done");
+      expect(repo.read(FILE)).toContain("- [x] Do the thing.");
+      expect(git(repo.dir, "rev-parse", "main")).toBe(git(origin, "rev-parse", "main"));
+      expect(output.join("\n")).not.toMatch(/Warning/);
+    });
+  });
+
+  it("leaves no Issue-file commit on the branch when publishing fails", async () => {
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher: fakePublisher({ fail: "PUSH-REJECTED-MARKER" }), config, log });
+
+    expect(git(repo.dir, "log", "--format=%s", "main..issue/01-first")).toBe("fake agent: implement issue");
+    expect(repo.read(FILE)).toContain("Could not publish the Pull Request");
+  });
+
   it("commits and pushes nothing for an Issue that fails the Gate", async () => {
     const publisher = fakePublisher({ pushFrom: repo.dir });
 

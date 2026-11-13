@@ -8,7 +8,7 @@ import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Age
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, withoutNpmExecPath, type GateResult } from "./gate.js";
-import { createIssueStore, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
+import { createIssueStore, mergeIssueFile, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
@@ -147,6 +147,7 @@ type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "tar
 async function markMergedIssuesDone(context: IssueContext): Promise<void> {
   const { repoDir, targetBranch, store, log, publisher, config } = context;
   const mergedPullRequests: Issue[] = [];
+  const caughtUp: Issue[] = [];
   for (const issue of await store.awaitingMerge()) {
     if (issue.pullRequest) {
       let state;
@@ -164,17 +165,17 @@ async function markMergedIssuesDone(context: IssueContext): Promise<void> {
       if (config.pullRequest) {
         // The Issue file was committed onto the branch, so the merge brings it in: catch up first.
         mergedPullRequests.push(issue);
-        continue;
+      } else {
+        caughtUp.push(issue);
       }
-      await store.transition(issue, "done");
-      log(`Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`);
       continue;
     }
     if (!(await isMerged(repoDir, issue.branch, targetBranch))) continue;
     await store.transition(issue, "done");
     log(`Issue ${issue.id} is done: ${issue.branch} is merged into ${targetBranch}.`);
   }
-  for (const issue of await pullMergedIssueFiles(mergedPullRequests, context)) {
+  caughtUp.push(...(await pullMergedIssueFiles(mergedPullRequests, context)));
+  for (const issue of caughtUp) {
     await store.transition(issue, "done");
     log(`Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`);
   }
@@ -463,18 +464,22 @@ async function restoreBranch(
 }
 
 /**
- * Commits the Issue file, with its Run comments, onto the Issue's branch, pushes the branch and opens its Pull
+ * Merges the Issue file, with its Run comments, onto the Issue's branch, pushes the branch and opens its Pull
  * Request against the target branch. Once it is open, the URL is recorded, the Issue moves to `awaiting-merge`,
- * and the Issue file is committed and pushed again, so the working copy's file matches the branch tip. The host
- * does all this, never the sandbox. A failure is commented on the Issue and returned rather than thrown, so the
- * Run carries on.
+ * and the Issue file is merged onto the branch and pushed again, so the working copy's file matches the branch
+ * tip. When publishing fails, the branch is put back as it was, so the Issue-file commit never lingers on it. The
+ * host does all this, never the sandbox. A failure is commented on the Issue and returned rather than thrown, so
+ * the Run carries on.
  */
 async function publishPullRequest(issue: Issue, body: string, options: IssueContext): Promise<PublishResult> {
-  const { store, publisher, targetBranch, repoDir } = options;
+  const { store, publisher, targetBranch, repoDir, log } = options;
   const commitMessage = `Record Issue ${issue.id}'s Run comments`;
+  const file = relative(repoDir, issue.path);
+  const tip = await git(repoDir, "rev-parse", issue.branch);
   let url: string;
+  let merged: string;
   try {
-    await commitIssueFile(repoDir, issue, commitMessage);
+    merged = await commitIssueFile(repoDir, issue, (await showFile(repoDir, targetBranch, file)) ?? "", commitMessage);
     ({ url } = await publisher.publish({
       branch: issue.branch,
       base: targetBranch,
@@ -483,14 +488,16 @@ async function publishPullRequest(issue: Issue, body: string, options: IssueCont
     }));
   } catch (error) {
     const message = errorMessage(error);
+    await git(repoDir, "update-ref", `refs/heads/${issue.branch}`, tip);
     await store.comment(issue, `**Could not publish the Pull Request**\n\n${fenced(message.trim())}`);
     return { published: false, error: message };
   }
   try {
+    await writeFile(issue.path, merged);
     await store.recordPullRequest(issue, url);
     await store.comment(issue, `**Pull Request opened**: ${url}`);
     await store.transition(issue, "awaiting-merge");
-    await commitIssueFile(repoDir, issue, commitMessage);
+    await writeFile(issue.path, await commitIssueFile(repoDir, issue, merged, commitMessage));
     await publisher.push(issue.branch);
     return { published: true, url };
   } catch (error) {
@@ -498,23 +505,41 @@ async function publishPullRequest(issue: Issue, body: string, options: IssueCont
     const message = `The Pull Request was opened at ${url}, but recording it on the Issue and its branch failed: ${errorMessage(error)}`;
     try {
       await store.comment(issue, `**Warning**: ${message}`);
-    } catch {
-      // The Run summary still carries the message.
+    } catch (commentError) {
+      // The Run summary still carries the message; say why the Issue file does not.
+      log(`Warning: could not comment on Issue ${issue.id}: ${errorMessage(commentError)}`);
     }
     return { published: true, url, error: message };
   }
 }
 
-/** Copies the Issue file from the working copy onto the tip of its branch and commits it, when it changed. */
-async function commitIssueFile(repoDir: string, issue: Issue, message: string): Promise<void> {
+/**
+ * Merges the working copy's Issue file into the copy at the tip of its branch (see `mergeIssueFile`), never
+ * overwriting the branch's copy, and commits the result there when it changed. `base` is the file both last
+ * agreed on. Returns the merged file, for the caller to write back to the working copy.
+ */
+async function commitIssueFile(repoDir: string, issue: Issue, base: string, message: string): Promise<string> {
   const file = relative(repoDir, issue.path);
-  const content = await readFile(issue.path);
+  const working = await readFile(issue.path, "utf8");
+  const branchCopy = await showFile(repoDir, issue.branch, file);
+  const merged = branchCopy === undefined ? working : mergeIssueFile(branchCopy, working, base);
   await withWorktree(repoDir, issue.branch, async (dir) => {
     await mkdir(dirname(join(dir, file)), { recursive: true });
-    await writeFile(join(dir, file), content);
+    await writeFile(join(dir, file), merged);
     await git(dir, "add", "--", file);
     if (await git(dir, "status", "--porcelain", "--", file)) await git(dir, "commit", "-q", "--no-verify", "-m", message);
   });
+  return merged;
+}
+
+/** `file` as committed at `ref`, or undefined when it is not there. */
+async function showFile(repoDir: string, ref: string, file: string): Promise<string | undefined> {
+  try {
+    await git(repoDir, "rev-parse", "--verify", "--quiet", `${ref}:${file}`);
+  } catch {
+    return undefined;
+  }
+  return (await exec("git", ["show", `${ref}:${file}`], { cwd: repoDir, maxBuffer: 64 * 1024 * 1024 })).stdout;
 }
 
 /**

@@ -3,7 +3,7 @@ import type { CodingStandardsLayer } from "./coding-standards.js";
 import type { Issue } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 
-export function buildImplementerPrompt(issue: Issue, glossary: string | undefined): string {
+export function buildImplementerPrompt(issue: Issue, glossary: string | undefined, gate: readonly string[]): string {
   const sections = [
     "You are the Implementer. Turn the Issue below into commits on the current branch.",
     "Work only on what the Issue asks for. Commit your work before you finish.",
@@ -11,6 +11,13 @@ export function buildImplementerPrompt(issue: Issue, glossary: string | undefine
   ];
   if (issue.spec) sections.push(`## Spec\n\n${issue.spec.trim()}`);
   if (glossary) sections.push(`## Glossary\n\nUse these terms exactly.\n\n${glossary.trim()}`);
+  sections.push(
+    gateSection(
+      gate,
+      "Your branch reaches awaiting-merge only if every command passes.",
+      "The worktree starts without installed dependencies, so run them in this order to check your work before you finish.",
+    ),
+  );
   return `${sections.join("\n\n")}\n`;
 }
 
@@ -69,7 +76,11 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
   if (issue.spec) sections.push(`## Spec\n\n${issue.spec.trim()}`);
   sections.push(
     codingStandardsSection(context.standards),
-    gateSection(context.gate),
+    gateSection(
+      context.gate,
+      "The Run runs the Gate itself after this Review Session, on the Issue's branch, and the change only reaches awaiting-merge if every command passes.",
+      "Run them yourself only to check your own fixes before you finish.",
+    ),
     `## Commits\n\n${fenced(context.commits.trim() || "(no commits)")}`,
     `## Diff\n\n${fenced(context.diff.trim() || "(empty diff)", "diff")}`,
     OUTPUT_FORMAT,
@@ -78,17 +89,17 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
 }
 
 /**
- * The Gate section: the reviewer runs these only to check its own fixes, because
- * the Run runs the Gate itself once the review is done.
+ * The Gate section: the configured commands, framed for the stage. The Run runs the Gate itself after
+ * the Review Session; each stage runs the commands only to check its own work.
  */
-function gateSection(commands: readonly string[]): string {
+function gateSection(commands: readonly string[], why: string, when: string): string {
   return `## Gate
 
-The Run runs the Gate itself after this Review Session, on the Issue's branch, and the change only reaches awaiting-merge if every command passes. The configured Gate commands, one per line, run in order:
+${why} The configured Gate commands, one per line, run in order:
 
 ${fenced(commands.join("\n"), "sh")}
 
-Run them yourself only to check your own fixes before you finish.`;
+${when}`;
 }
 
 /**

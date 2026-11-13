@@ -61,13 +61,14 @@ describe("Run Workflow", () => {
     expect(git(repo.dir, "log", "--format=%s", "main..issue/02-later-work")).toBe("fake agent: implement issue");
     expect(git(repo.dir, "branch", "--show-current")).toBe("main");
 
-    // The Implementer starts with the Issue, its Spec and the glossary.
+    // The Implementer starts with the Issue, its Spec, the glossary and the Gate commands it must pass.
     const call = agent.calls[0]!;
     expect(call.stage).toBe("implementer");
     expect(call.branch).toBe("issue/02-later-work");
     expect(call.prompt).toContain("02: Later work");
     expect(call.prompt).toContain("SPEC-BODY-MARKER");
     expect(call.prompt).toContain("GLOSSARY-MARKER");
+    expect(call.prompt).toContain("true\ntest -f feature.txt");
     expect(call.model).toBe("claude-opus-5-5");
     expect(call.effort).toBe("medium");
     expect(call.maxIterations).toBe(3);

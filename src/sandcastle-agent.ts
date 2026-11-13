@@ -110,8 +110,9 @@ function watchStream(provider: AgentProvider): StreamWatch {
 
 /**
  * Claude Code keeps its temp files in `/tmp/claude-<uid>`, which the native sandbox can't write to, and on macOS
- * a bare `mktemp` ignores `TMPDIR` and uses the per-user temp dir, which Seatbelt also blocks.
- * Point it at the sandbox's own private `TMPDIR` instead; the shell expands it inside the sandbox.
+ * a bare `mktemp` ignores `TMPDIR` and uses the per-user temp dir, which Seatbelt also blocks. zsh writes
+ * here-document temp files under `TMPPREFIX` (default `/tmp/zsh`), not `TMPDIR`, so every `<<EOF` failed.
+ * Point all three at the sandbox's own private `TMPDIR` instead; the shell expands it inside the sandbox.
  *
  * Claude also exits non-zero after reporting an error in its stream, and Sandcastle fails on the exit code
  * before looking at the stream. So a non-zero exit becomes 0 only when Claude reported the error in its result line;
@@ -124,7 +125,7 @@ function sandboxedClaudeCode(provider: AgentProvider): AgentProvider {
       const built = provider.buildPrintCommand(options);
       const command = [
         `tmp="\${TMPDIR:-/tmp}"; out=$(mktemp "$tmp/sandcastle-out.XXXXXX") && code_file=$(mktemp "$tmp/sandcastle-code.XXXXXX") || exit 1`,
-        `{ CLAUDE_CODE_TMPDIR="$TMPDIR" ${built.command}; echo $? > "$code_file"; } | tee "$out"`,
+        `{ CLAUDE_CODE_TMPDIR="$TMPDIR" TMPPREFIX="$TMPDIR/zsh" ${built.command}; echo $? > "$code_file"; } | tee "$out"`,
         `code=$(cat "$code_file"); code=\${code:-1}`,
         // Claude does not print `type` first in its result line, so both keys are matched anywhere on the line.
         `if [ "$code" -ne 0 ] && grep '"type":"result"' "$out" | grep -q '"is_error":true'; then code=0; fi`,
@@ -137,19 +138,20 @@ function sandboxedClaudeCode(provider: AgentProvider): AgentProvider {
 }
 
 /**
- * Files at the repo root that a toolchain reads when it walks up from the worktree looking for a project or
- * workspace root. Sandcastle puts worktrees under `<repo>/.sandcastle/worktrees/`, so that walk reaches the main
- * checkout, which the native sandbox otherwise denies: `uv run` then fails on the repo's `pyproject.toml`.
+ * Paths at the repo root that a toolchain reads when it walks up from the worktree looking for a project root or
+ * installed packages. Sandcastle puts worktrees under `<repo>/.sandcastle/worktrees/`, so that walk reaches the main
+ * checkout, which the native sandbox otherwise denies: `uv run` fails on the repo's `pyproject.toml`, and a worktree
+ * without its own `node_modules` cannot resolve the main checkout's. A worktree's own install still takes precedence.
  */
-const PARENT_PROJECT_FILES = ["pyproject.toml", "uv.toml"];
+const PARENT_PROJECT_PATHS = ["pyproject.toml", "uv.toml", "node_modules"];
 
 /**
  * The native sandbox for this OS, or Docker. Imported lazily so only the chosen provider loads.
- * A native sandbox can read the repo root's project files that exist; Sandcastle rejects a mount that doesn't.
+ * A native sandbox can read the repo root's project paths that exist; Sandcastle rejects a mount that doesn't.
  */
 async function sandboxProvider(choice: SandboxChoice, repoDir: string): Promise<SandboxProvider> {
   if (choice === "docker") return (await import("@ai-hero/sandcastle/sandboxes/docker")).docker();
-  const mounts = PARENT_PROJECT_FILES.map((file) => join(repoDir, file))
+  const mounts = PARENT_PROJECT_PATHS.map((file) => join(repoDir, file))
     .filter((path) => existsSync(path))
     .map((path) => ({ hostPath: path, sandboxPath: path, readonly: true }));
   if (process.platform === "darwin") return (await import("@ai-hero/sandcastle/sandboxes/seatbelt")).seatbelt({ mounts });

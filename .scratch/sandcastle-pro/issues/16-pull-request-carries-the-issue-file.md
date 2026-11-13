@@ -17,7 +17,7 @@ The fix has two parts:
 
 The working copy keeps the status, so `next()` still sees the Issue as `awaiting-merge` until then. Everything here only applies when `pullRequest` is on; with it off, behaviour is exactly as today.
 
-- [ ] Before pushing, the host copies the Issue file from the working copy into the Issue branch and commits it as `Record Issue <id>'s Run comments`, so the Pull Request includes the comments up to "Gate passed".
+- [ ] Before pushing, the host merges the Issue file onto the Issue branch and commits it as `Record Issue <id>'s Run comments`, so the Pull Request includes the comments up to "Gate passed". The merged file is the branch's copy, which keeps the Implementer's ticked boxes and any comments of its own, plus the working copy's header lines (`Status:`, `Pull Request:`) and the comments the Run added since the target branch's committed version. The host writes the same merged file back to the working copy, so the two match. It never overwrites the branch's copy with the working copy's.
 - [ ] After the `Pull Request:` line and the "Pull Request opened" comment are written, the host commits the Issue file onto the branch again and pushes. The working copy's Issue file then matches the branch tip exactly.
 - [ ] Issues that are not published (Gate failed, unfixed Critical Findings, Spec disagreement, paused) are unchanged: nothing is committed or pushed for them.
 - [ ] At the start of a Run, for each Issue whose Pull Request is `MERGED`, the host:
@@ -32,3 +32,20 @@ The working copy keeps the status, so `next()` still sees the Issue as `awaiting
   - after a merge on `origin`, the next Run pulls the target branch and marks the Issue `done`, without an error from git;
   - a working copy whose Issue file differs from the branch is left untouched, and a warning is logged;
   - a `CLOSED` Pull Request logs a warning.
+
+## Comments
+
+Usage: Implementer 54 input, 28,120 output, 82,660 cache creation, 1,918,828 cache read; Review Session 8 input, 5,195 output, 33,849 cache creation, 132,190 cache read.
+
+**Review Session: Non-critical Findings**
+
+- publishPullRequest commits the Issue file onto the local Issue branch before publisher.publish; when the push or `gh pr create` fails, that commit stays on the branch and the working copy then gains a 'Could not publish' comment, so merging the branch locally hits the same git refusal over the Issue file that this Issue fixes.
+- The empty `catch {}` around the warning comment in publishPullRequest drops that error; the Run summary still has the original message, but the Preset Coding Standards say errors are never swallowed silently.
+- The log line 'Issue X is done: its Pull Request URL is merged.' is duplicated in markMergedIssuesDone (once for pullRequest off, once after pullMergedIssueFiles).
+- PublishResult now allows `published: true` together with `error`; a separate field such as `warning` would make the partial-success case clearer than reusing `error`.
+
+**Review Session: Spec disagreement (not acted on)**
+
+- Issue 16 says the host copies the Issue file from the working copy onto the Issue branch. The Implementer ticks the acceptance boxes on the branch and the working copy never has those ticks, so the 'Record Issue NN's Run comments' commit un-ticks every box the Implementer ticked and the Pull Request shows them unticked. Merging the comments into the branch's copy, instead of overwriting it, would keep both.
+
+**Spec disagreement resolved:** the Review Session was right. The first box now merges the branch's copy with the working copy's header lines and Run comments, so the ticked boxes survive. Everything else on `issue/16-pull-request-carries-the-issue-file` (commit `778087c`) stands; only the Issue-file step needs to change. Also consider the first Non-critical Finding: after a failed publish, the Issue-file commit stays on the branch.

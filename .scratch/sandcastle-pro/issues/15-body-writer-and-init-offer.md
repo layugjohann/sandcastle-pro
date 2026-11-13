@@ -1,6 +1,6 @@
 # 15: Body writer for the Pull Request, and the init offer
 
-Status: ready-for-agent
+Status: done
 Blocked by: 14
 
 Spec: `.scratch/sandcastle-pro/spec.md`, as amended by `docs/adr/0003-publish-each-issue-as-a-pull-request.md`

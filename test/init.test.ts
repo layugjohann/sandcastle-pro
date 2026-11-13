@@ -39,6 +39,15 @@ describe("init", () => {
     expect(output.join("\n")).toMatch(named);
   });
 
+  it("warns about Apple's git shim only when Runs use Seatbelt", async () => {
+    await initProject({ repoDir: dir, gate: ["true"], platform: "darwin", log });
+    expect(output.join("\n")).toMatch(/\/usr\/bin\/git/);
+
+    output.length = 0;
+    await initProject({ repoDir: dir, gate: ["true"], sandbox: "docker", platform: "darwin", log });
+    expect(output.join("\n")).not.toMatch(/\/usr\/bin\/git/);
+  });
+
   it("refuses the native sandbox on an OS that has none, and writes nothing", async () => {
     await expect(initProject({ repoDir: dir, gate: ["true"], sandbox: "native", platform: "win32", log })).rejects.toThrow(
       /No native sandbox for win32.*--sandbox docker/,

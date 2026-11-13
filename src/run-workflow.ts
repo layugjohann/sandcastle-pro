@@ -250,7 +250,7 @@ async function recoverFromFailure(issue: Issue, stage: Stage, error: unknown, op
   await commitWorkInProgress(repoDir, branch, `WIP: ${stageName} failed (sandcastle-pro)`);
   await store.transition(issue, "ready-for-agent");
   const deleted = await deleteBranchIfEmpty(repoDir, branch, targetBranch);
-  log(`Issue ${issue.id} is back to ready-for-agent: the ${name} failed.${deleted ? ` Deleted the empty ${branch}.` : ""}`);
+  log(`Issue ${issue.id} is back to ready-for-agent: the ${stageName} failed.${deleted ? ` Deleted the empty ${branch}.` : ""}`);
 }
 
 /** Pauses the Issue at the usage limit, so the next Run continues the session. */

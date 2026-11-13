@@ -1,6 +1,6 @@
 # 13: Unfixed Critical Findings stop the Issue
 
-Status: ready-for-agent
+Status: done
 Blocked by: 12
 
 Spec: `.scratch/sandcastle-pro/spec.md`, as amended by `docs/adr/0003-publish-each-issue-as-a-pull-request.md`

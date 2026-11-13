@@ -23,3 +23,17 @@ Spec: `.scratch/sandcastle-pro/spec.md`, as amended by `docs/adr/0003-publish-ea
   - a usage limit in the body writer gives the fallback body, `awaiting-merge`, and the Run stops;
   - the body writer runs with the configured model.
 - [x] `init` tests cover offering the setting and not offering it.
+
+## Comments
+
+Usage: Implementer 126 input, 47,658 output, 135,695 cache creation, 6,619,146 cache read; Review Session 12 input, 4,408 output, 47,856 cache creation, 287,604 cache read.
+
+**Review Session: Non-critical Findings**
+
+- writeBody runs `git rev-parse` and restoreBranch outside the try block. A git failure there, after the Gate passed, ends the Run with the Issue still in-progress and no Pull Request opened.
+- The diff goes into the body writer's prompt with no size limit, so a large change costs a lot of tokens for a low-effort summary.
+- truncateStart is exported from pull-request-body with MAX_EVIDENCE_CHARS as its default, so the prompt depends on a Pull Request body limit. MAX_WRITTEN_CHARS repeats the same 50,000.
+- writeBody returns both `result` and `note`; the note could be built from result.reason instead of being carried separately.
+- init treats 'has a GitHub remote' as 'origin is on GitHub'. That matches what git push uses, but a repo with only a non-origin GitHub remote is not offered Pull Requests.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-15-2026-11-13T16-00-16-720Z.log`).

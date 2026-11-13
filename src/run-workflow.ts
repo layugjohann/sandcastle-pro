@@ -43,6 +43,7 @@ export type IssueResult =
   | ({ outcome: "awaiting-merge" } & ReviewedIssue)
   | ({ outcome: "spec-disagreement" } & ReviewedIssue)
   | ({ outcome: "gate-failed"; gate: GateResult } & ReviewedIssue)
+  | ({ outcome: "critical-unfixed"; unfixedCritical: Finding[] } & ReviewedIssue)
   | ({ outcome: "paused"; pausedAt: PausedAt } & IssueOutcomeDetails);
 
 export interface RunResult {
@@ -53,9 +54,9 @@ export interface RunResult {
 /**
  * One Run: up to `count` ready Issues, strictly one after another. Each goes
  * through the Implementer, one Review Session, then the Gate. A paused Issue is
- * resumed first, in the stage it stopped in. A Gate failure ends the Run, because
- * later Issues may build on the broken one; so does the usage limit, so the human
- * decides when to spend the next window.
+ * resumed first, in the stage it stopped in. A Gate failure, or a Critical Finding the
+ * Review Session left unfixed, ends the Run, because later Issues may build on the
+ * broken one; so does the usage limit, so the human decides when to spend the next window.
  */
 export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   const log = options.log ?? ((line: string) => console.log(line));
@@ -97,6 +98,10 @@ async function runIssues(issues: IssueResult[], count: number, context: IssueCon
     issues.push(result);
     if (result.outcome === "gate-failed") {
       if (issues.length < count) log(`Stopping the Run: Issue ${issue.id} failed the Gate, so no further Issues are started.`);
+      break;
+    }
+    if (result.outcome === "critical-unfixed") {
+      if (issues.length < count) log(`Stopping the Run: Issue ${issue.id} has unfixed Critical Findings, so no further Issues are started.`);
       break;
     }
     if (result.outcome === "paused") {
@@ -202,6 +207,15 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     await store.transition(issue, "needs-info");
     log(summary(`Issue ${issue.id} needs info.`, branch, "not run", [disagreements, report]));
     return { outcome: "spec-disagreement", issue, branch, review, usage };
+  }
+
+  const unfixedCritical = review.findings.filter(isUnfixedCritical);
+  if (unfixedCritical.length > 0) {
+    // Only Non-critical Findings may be left for the human, so the Issue cannot reach awaiting-merge.
+    // The unfixed Critical Findings are already in the Findings comment above.
+    await store.transition(issue, "ready-for-human");
+    log(summary(`Issue ${issue.id} has Critical Findings the Review Session did not fix.`, branch, "not run, because Critical Findings are unfixed", [report]));
+    return { outcome: "critical-unfixed", issue, branch, unfixedCritical, review, usage };
   }
 
   const gate = await withWorktree(repoDir, branch, (dir) => runGate(config.gate, dir));
@@ -311,7 +325,7 @@ async function deleteBranchIfEmpty(repoDir: string, branch: string, target: stri
 /** The Findings the human must see: Non-critical ones, and any Critical one left unfixed. */
 function findingsForHuman(findings: readonly Finding[]): string | undefined {
   const sections = [];
-  const unfixedCritical = findings.filter((f) => f.severity === "critical" && !f.fixed);
+  const unfixedCritical = findings.filter(isUnfixedCritical);
   const nonCritical = findings.filter((f) => f.severity === "non-critical");
   if (unfixedCritical.length > 0) {
     sections.push(bullets("Review Session: Critical Findings not fixed", unfixedCritical.map((f) => f.description)));
@@ -320,6 +334,10 @@ function findingsForHuman(findings: readonly Finding[]): string | undefined {
     sections.push(bullets("Review Session: Non-critical Findings", nonCritical.map((f) => f.description)));
   }
   return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
+function isUnfixedCritical(finding: Finding): boolean {
+  return finding.severity === "critical" && !finding.fixed;
 }
 
 function bullets(heading: string, items: readonly string[]): string {

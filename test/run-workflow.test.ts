@@ -512,16 +512,68 @@ describe("Review Session", () => {
     expect(printed).toContain("The Spec says retries are unbounded; that can loop forever");
   });
 
-  it("logs a Critical Finding the Review Session could not fix instead of dropping it", async () => {
+  it("sends an Issue with an unfixed Critical Finding to ready-for-human without running the Gate, stopping count N", async () => {
+    repo.write(`${ISSUES}/02-second.md`, issueFile({ title: "02: Second", status: "ready-for-agent" }));
+    repo.commitAll("add second issue");
     const agent = fakeAgent(repo.dir, {
-      review: { review: { findings: [{ severity: "critical", fixed: false, description: "Race on shared cache" }] } },
+      review: {
+        review: {
+          findings: [
+            { severity: "critical", fixed: false, description: "Race on shared cache" },
+            { severity: "non-critical", fixed: false, description: "Tidy imports" },
+          ],
+        },
+      },
     });
+    const gateRan = join(repo.dir, "gate-ran");
 
-    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([`touch ${gateRan}`]), count: 2, log });
 
+    expect(result.issues.map((r) => r.outcome)).toEqual(["critical-unfixed"]);
+    expect(existsSync(gateRan)).toBe(false);
+    expect(statusOf(repo, "01-only.md")).toBe("ready-for-human");
+    expect(statusOf(repo, "02-second.md")).toBe("ready-for-agent");
+    expect(git(repo.dir, "branch", "--list", "issue/02-second")).toBe("");
     const text = repo.read(`${ISSUES}/01-only.md`);
-    expect(text.slice(text.indexOf("## Comments"))).toContain("Race on shared cache");
-    expect(output.join("\n")).toContain("Race on shared cache");
+    const comments = text.slice(text.indexOf("## Comments"));
+    expect(comments).toContain("Race on shared cache");
+    expect(comments).toContain("Tidy imports");
+    expect(comments).not.toContain("Gate passed");
+    const printed = output.join("\n");
+    expect(printed).toContain("issue/01-only");
+    expect(printed).toMatch(/gate: not run, because critical findings are unfixed/i);
+    expect(printed).toContain("Race on shared cache");
+  });
+
+  it("still runs the Gate when every Critical Finding is fixed", async () => {
+    const agent = fakeAgent(repo.dir, {
+      review: { review: { findings: [{ severity: "critical", fixed: true, description: "Race on shared cache" }] } },
+    });
+    const gateRan = join(repo.dir, "gate-ran");
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([`touch ${gateRan}`]), log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["awaiting-merge"]);
+    expect(existsSync(gateRan)).toBe(true);
+    expect(statusOf(repo, "01-only.md")).toBe("awaiting-merge");
+  });
+
+  it("puts a Spec disagreement before an unfixed Critical Finding: needs-info, and no Gate", async () => {
+    const agent = fakeAgent(repo.dir, {
+      review: {
+        review: {
+          findings: [{ severity: "critical", fixed: false, description: "Race on shared cache" }],
+          specDisagreements: ["The Spec says retries are unbounded"],
+        },
+      },
+    });
+    const gateRan = join(repo.dir, "gate-ran");
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate([`touch ${gateRan}`]), log });
+
+    expect(result.issues.map((r) => r.outcome)).toEqual(["spec-disagreement"]);
+    expect(existsSync(gateRan)).toBe(false);
+    expect(statusOf(repo, "01-only.md")).toBe("needs-info");
   });
 
   it("does not treat a Review Session without Findings as a clean review", async () => {

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadCodingStandards, PERSONAL_CODING_STANDARDS, PROJECT_CODING_STANDARDS, runWorkflow } from "../src/index.js";
@@ -132,6 +132,45 @@ describe("Run Workflow", () => {
     expect(comments).toContain("FIRST-OK");
     expect(comments).toContain("GATE-BOOM-MARKER");
     expect(git(repo.dir, "log", "--format=%s", "main..issue/01-only")).toBe("fake agent: implement issue");
+  });
+
+  it("logs every Gate command with its exit code and output under .sandcastle/logs, and names the log in the Issue", async () => {
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["echo PASS-ONE", "echo PASS-TWO"]), log });
+
+    expect(statusOf(repo, "01-only.md")).toBe("awaiting-merge");
+    const logs = readdirSync(join(repo.dir, ".sandcastle/logs"));
+    expect(logs).toHaveLength(1);
+    const gateLog = repo.read(`.sandcastle/logs/${logs[0]}`);
+    expect(gateLog).toMatch(/\$ echo PASS-ONE\nPASS-ONE\n\(exit code 0\)/);
+    expect(gateLog).toMatch(/\$ echo PASS-TWO\nPASS-TWO\n\(exit code 0\)/);
+    const text = repo.read(`${ISSUES}/01-only.md`);
+    const comments = text.slice(text.indexOf("## Comments"));
+    expect(comments).toContain("**Gate passed**");
+    expect(comments).toContain(`.sandcastle/logs/${logs[0]}`);
+  });
+
+  it("runs the Gate without the node_modules/.bin dirs npx adds to PATH, so a tool only found there fails it", async () => {
+    repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
+    repo.commitAll("add issue");
+    // What `npx sandcastle-pro` does: npm prepends the main checkout's node_modules/.bin to PATH.
+    const bin = join(repo.dir, "node_modules/.bin");
+    writeFile(repo.dir, "node_modules/.bin/only-in-main-checkout", "#!/bin/sh\nexit 0\n");
+    chmodSync(join(bin, "only-in-main-checkout"), 0o755);
+    const original = { PATH: process.env.PATH, npm_command: process.env.npm_command };
+    process.env.PATH = `${bin}:${process.env.PATH}`;
+    process.env.npm_command = "exec";
+    try {
+      const result = await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), config: configWithGate(["only-in-main-checkout"]), log });
+      expect(result.issues.map((r) => r.outcome)).toEqual(["gate-failed"]);
+    } finally {
+      process.env.PATH = original.PATH;
+      if (original.npm_command === undefined) delete process.env.npm_command;
+      else process.env.npm_command = original.npm_command;
+    }
+    expect(statusOf(repo, "01-only.md")).toBe("ready-for-human");
   });
 
   it("runs the Gate commands in order and stops at the first failure", async () => {

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -7,7 +7,7 @@ import { readOptional } from "./files.js";
 import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Agent, type Finding, type Review, type Stage } from "./agent.js";
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
-import { runGate, type GateResult } from "./gate.js";
+import { runGate, withoutNpmExecPath, type GateResult } from "./gate.js";
 import { createIssueStore, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 import { buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
@@ -42,7 +42,7 @@ type ReviewedIssue = IssueOutcomeDetails & { review: Review };
 export type IssueResult =
   | ({ outcome: "awaiting-merge" } & ReviewedIssue)
   | ({ outcome: "spec-disagreement" } & ReviewedIssue)
-  | ({ outcome: "gate-failed"; gate: GateResult & { passed: false } } & ReviewedIssue)
+  | ({ outcome: "gate-failed"; gate: GateResult } & ReviewedIssue)
   | ({ outcome: "paused"; pausedAt: PausedAt } & IssueOutcomeDetails);
 
 export interface RunResult {
@@ -205,17 +205,19 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   }
 
   const gate = await withWorktree(repoDir, branch, (dir) => runGate(config.gate, dir));
+  const gateLog = await writeGateLog(repoDir, issue, gate);
   if (!gate.passed) {
     // The branch is left as it is so the human can take over with full context.
-    await store.comment(issue, `**Gate failed**\n\n${fenced(gate.output.trim())}`);
+    await store.comment(issue, `**Gate failed** (log: \`${gateLog}\`)\n\n${fenced(gate.output.trim())}`);
     await store.transition(issue, "ready-for-human");
     log(`Gate failed on ${branch}:\n${gate.output}`);
-    log(summary(`Issue ${issue.id} did not pass the Gate.`, branch, "failed", [report]));
+    log(summary(`Issue ${issue.id} did not pass the Gate.`, branch, `failed (log: ${gateLog})`, [report]));
     return { outcome: "gate-failed", issue, branch, gate, review, usage };
   }
 
+  await store.comment(issue, `**Gate passed**: every command exited 0 (log: \`${gateLog}\`).`);
   await store.transition(issue, "awaiting-merge");
-  log(summary(`Issue ${issue.id} is awaiting merge.`, branch, "passed", [report]));
+  log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [report]));
   return { outcome: "awaiting-merge", issue, branch, review, usage };
 }
 
@@ -336,6 +338,26 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 async function ensureBranch(repoDir: string, branch: string, from: string): Promise<void> {
   const exists = await git(repoDir, "branch", "--list", branch);
   if (!exists) await git(repoDir, "branch", branch, from);
+}
+
+/** Where Gate logs go, relative to the repo root. Git-ignored by `init`. */
+const LOGS_DIR = ".sandcastle/logs";
+
+/**
+ * Writes the Gate's full transcript, with the commit it ran on and the PATH it ran with, to its own file under
+ * `.sandcastle/logs/`, so a passing Gate leaves a record too. Returns the path relative to the repo root.
+ */
+async function writeGateLog(repoDir: string, issue: Issue, gate: GateResult): Promise<string> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const path = join(LOGS_DIR, `gate-${issue.id}-${stamp}.log`);
+  const header = [
+    `Issue ${issue.id}, branch ${issue.branch} at ${await git(repoDir, "rev-parse", "--short", issue.branch)}`,
+    `Gate ${gate.passed ? "passed" : "failed"}`,
+    `PATH=${withoutNpmExecPath(process.env).PATH ?? ""}`,
+  ];
+  await mkdir(join(repoDir, LOGS_DIR), { recursive: true });
+  await writeFile(join(repoDir, path), `${header.join("\n")}\n\n${gate.output}`);
+  return path;
 }
 
 async function withWorktree<T>(repoDir: string, branch: string, fn: (dir: string) => Promise<T>): Promise<T> {

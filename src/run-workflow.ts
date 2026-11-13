@@ -298,7 +298,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
       stage: "implementer",
       prompt: resume
         ? buildResumePrompt("implementer")
-        : buildImplementerPrompt(issue, await readOptional(join(repoDir, "GLOSSARY.md"))),
+        : buildImplementerPrompt(issue, await readOptional(join(repoDir, "GLOSSARY.md")), config.gate),
       model,
       effort,
       branch,

@@ -1,6 +1,6 @@
 # Pro Sandcastle
 
-A preset for Sandcastle that makes autonomous coding workflows fit inside a Claude Pro usage window. Plan and merge are done by the human; the sandbox implements and reviews.
+A preset for Sandcastle that makes autonomous coding workflows fit inside a Claude Pro usage window. Plan and merge are done by the human; the sandbox implements and reviews, and each finished Issue is published as a Pull Request.
 
 ## Language
 
@@ -47,6 +47,10 @@ _Avoid_: Style guide, conventions, lint rules
 **Must Rule**:
 A Coding Standard marked as mandatory. Breaking it is a Critical Finding rather than a Non-critical one.
 _Avoid_: Hard rule, required standard
+
+**Pull Request**:
+The published form of one Issue's branch, opened once it passes the Gate, which the human reviews and merges.
+_Avoid_: PR (in prose), merge request
 
 **Run**:
 One invocation of the Preset, which takes Issues through implementation, Review Session, and Gate one at a time.

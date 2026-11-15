@@ -1,6 +1,6 @@
 # 02: Picking rules for Stacked Issues
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 01
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 2, 3, 4)
@@ -14,3 +14,14 @@ Spec: `.scratch/stacked-issues/spec.md` (stories 2, 3, 4)
 - [x] Tested at the `runWorkflow` seam: the two-unmerged-blockers skip and its log; a blocker in `ready-for-human` still blocks; a three-Issue chain in one Run.
 
 ## Comments
+
+Usage: Implementer 16 input, 5,832 output, 35,059 cache creation, 265,873 cache read; Review Session 8 input, 1,292 output, 19,285 cache creation, 98,150 cache read.
+
+**Review Session: Non-critical Findings**
+
+- The 'keeps the paused-first rule and the lowest-numbered order' test sits in the '…at the runWorkflow seam' describe block but calls createIssueStore directly instead of going through runWorkflow. The test's name and location are misleading; no required coverage is missing.
+- In run-workflow.ts, the skip log line 'It has N unmerged blockers' repeats the blocker list printed just before it. A wording or simplification nit.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-02-2026-11-15T17-55-14-126Z.log`).
+
+Usage: Body writer 2 input, 1,246 output, 17,408 cache creation, 11,370 cache read.

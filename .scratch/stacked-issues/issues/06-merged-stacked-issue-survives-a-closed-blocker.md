@@ -1,6 +1,6 @@
 # 06: A merged Stacked Issue is done even when its blocker was closed
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: None
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 11, 13). Review Finding from Issue 04.
@@ -19,3 +19,16 @@ Spec: `.scratch/stacked-issues/spec.md` (stories 11, 13). Review Finding from Is
 ## Comments
 
 - Implementer: `markMergedIssuesDone` now reads every Pull Request state before it moves anything, then marks the Issues on the target branch `done` and only after that handles closed blockers. The set of Issues on the target branch (`onTarget`) is the one guard, passed to `sendStackedIssuesToHuman`. The catch-up also had to change. A Stacked Issue's branch carries its blockers' Issue files, so `git pull` refused while the closed blocker's file had a local edit. `pullMergedIssueFiles` now also discards the edited files of the Issues up the `Stacked on:` chain, but only when they match the merged branch's tip, and it skips files an earlier Issue in the same pull already discarded. Without that skip, a blocker merged together with a lower-numbered Stacked Issue stayed `awaiting-merge`. Tests in `test/stacked-issues.test.ts` run each case with the Stacked Issue numbered above and below its blocker. One existing assertion changed: the closed-blocker test now expects the Stacked Issue's Pull Request state to be read too (`[PR_A, PR_B]`).
+
+Usage: Implementer 48 input, 20,671 output, 55,377 cache creation, 1,099,960 cache read; Review Session 4 input, 3,889 output, 27,255 cache creation, 45,465 cache read.
+
+**Review Session: Non-critical Findings**
+
+- pullMergedIssueFiles (src/run-workflow.ts) is about 70 lines doing selection, checks, discard and pull; split it at those seams (Preset: each function does one thing).
+- When `git checkout HEAD -- <file>` fails on a blocker's file in pullMergedIssueFiles, the warning names the Issue's own file, not the blocker file that failed.
+- In markMergedIssuesDone the comment 'The Issue file was committed onto the branch, so the merge brings it in: catch up first.' sits on a line that also routes the pullRequest:false case to `merged.ready`, so the comment is only half true.
+- No test covers a failure to read the Stacked Issue's Pull Request state while its blocker is CLOSED; it then goes to ready-for-human, which is reasonable but untested.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-06-2026-11-15T18-57-01-279Z.log`).
+
+Usage: Body writer 2 input, 1,326 output, 25,601 cache creation, 11,370 cache read.

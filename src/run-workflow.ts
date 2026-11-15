@@ -12,7 +12,7 @@ import { baseOf, createIssueStore, mergeIssueFile, type Issue, type IssueStore, 
 import { fenced } from "./markdown.js";
 import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
-import { buildPullRequestBody, buildWrittenPullRequestBody, truncateStart, type PullRequestBodyInput, type StackedOnBlocker } from "./pull-request-body.js";
+import { buildPullRequestBody, buildWrittenPullRequestBody, stackedOnText, truncateStart, type PullRequestBodyInput, type StackedOnBlocker } from "./pull-request-body.js";
 import { formatUsage, type IssueUsage } from "./usage.js";
 
 const exec = promisify(execFile);
@@ -274,11 +274,13 @@ async function pullMergedIssueFiles(issues: readonly Issue[], context: IssueCont
       }
     }
     const edits: DiscardedEdit[] = [];
+    let discarding = file;
     try {
       for (const path of failure ? [] : paths) {
+        discarding = relative(repoDir, path);
         const edit: DiscardedEdit = {
           path,
-          file: relative(repoDir, path),
+          file: discarding,
           content: await readFile(path),
           indexEntry: await git(repoDir, "ls-files", "-s", "--", relative(repoDir, path)),
         };
@@ -287,7 +289,7 @@ async function pullMergedIssueFiles(issues: readonly Issue[], context: IssueCont
       }
     } catch (error) {
       for (const edit of edits) await restoreEdit(repoDir, edit);
-      failure = { file, reason: `could not discard its local edit: ${errorMessage(error)}` };
+      failure = { file: discarding, reason: `could not discard its local edit: ${errorMessage(error)}` };
     }
     if (failure) {
       warn(issue, failure.file, failure.reason);
@@ -493,13 +495,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
 async function blockerOf(base: string, { targetBranch, store }: IssueContext): Promise<StackedOnBlocker | undefined> {
   if (base === targetBranch) return undefined;
   const blocker = await store.byBranch(base);
-  return { id: blocker?.id, branch: base, pullRequest: blocker?.pullRequest };
-}
-
-/** The "Pull Request opened" comment's line naming the blocker a Stacked Issue is stacked on. */
-function stackedOnComment({ id, branch, pullRequest }: StackedOnBlocker): string {
-  const blocker = id === undefined ? `\`${branch}\`` : `Issue ${id} (\`${branch}\`${pullRequest === undefined ? "" : `, ${pullRequest}`})`;
-  return `Stacked on ${blocker}: merge it first.`;
+  return { id: blocker?.id, branch: base, pullRequest: blocker?.pullRequest, targetBranch };
 }
 
 /**
@@ -614,7 +610,7 @@ async function publishPullRequest(
   try {
     await writeFile(issue.path, merged);
     await store.recordPullRequest(issue, url);
-    const blocker = stackedOn === undefined ? "" : `\n\n${stackedOnComment(stackedOn)}`;
+    const blocker = stackedOn === undefined ? "" : `\n\n${stackedOnText(stackedOn)}`;
     await store.comment(issue, `**Pull Request opened**: ${url}${blocker}`);
     await store.transition(issue, "awaiting-merge");
     await writeFile(issue.path, await commitIssueFile(repoDir, issue, merged, commitMessage));

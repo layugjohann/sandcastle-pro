@@ -131,9 +131,14 @@ function parseStackedOn(text: string): string | undefined {
   return value || undefined;
 }
 
-/** The `Stacked on:` line for `branch`, in bold when the header's `Status:` or `Blocked by:` line is. */
+/** Whether a line the Run adds to `header` is bold: when the header's `Status:` or `Blocked by:` line is. */
+function isBoldHeader(header: string): boolean {
+  return /^\*\*(?:Status|Blocked by)(?::\*\*|\*\*:)/m.test(header);
+}
+
+/** The `Stacked on:` line for `branch`, in the style of the header around it. */
 function stackedOnLine(header: string, branch: string): string {
-  return /^\*\*(?:Status|Blocked by)(?::\*\*|\*\*:)/m.test(header) ? `**Stacked on:** ${branch}` : `Stacked on: ${branch}`;
+  return labelled("Stacked on", branch, isBoldHeader(header));
 }
 
 /** `header` with `line` placed under its `Blocked by:` line, else its `Status:` line, else its title. */
@@ -340,7 +345,9 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
 
     async pause(issue, { sessionId, stage }) {
       const before = await readFile(issue.path, "utf8");
-      const bold = PAUSED_SESSION_LINE.exec(headerOf(before))?.[1]?.startsWith("**") ?? false;
+      // A rewritten pause record keeps its own style; a new one follows the header around it.
+      const header = headerOf(before);
+      const bold = PAUSED_SESSION_LINE.exec(header)?.[1]?.startsWith("**") ?? isBoldHeader(header);
       const text = withStatus(before, "paused");
       const record = [
         labelled("Paused session", sessionId, bold),
@@ -358,7 +365,7 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
     async recordPullRequest(issue, url) {
       const text = await readFile(issue.path, "utf8");
       const header = headerOf(text);
-      const line = `Pull Request: ${url}`;
+      const line = labelled("Pull Request", url, isBoldHeader(header));
       const updated = PULL_REQUEST_LINE.test(header)
         ? header.replace(PULL_REQUEST_LINE, (_line, label: string) => `${label} ${url}`)
         : STATUS_LINE.test(header)

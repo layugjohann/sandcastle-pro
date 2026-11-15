@@ -12,7 +12,7 @@ import { baseOf, createIssueStore, mergeIssueFile, type Issue, type IssueStore, 
 import { fenced } from "./markdown.js";
 import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
-import { buildPullRequestBody, buildWrittenPullRequestBody, truncateStart, type PullRequestBodyInput } from "./pull-request-body.js";
+import { buildPullRequestBody, buildWrittenPullRequestBody, truncateStart, type PullRequestBodyInput, type StackedOnBlocker } from "./pull-request-body.js";
 import { formatUsage, type IssueUsage } from "./usage.js";
 
 const exec = promisify(execFile);
@@ -435,9 +435,10 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   }
 
   const written = await writeBody(issue, base, review.findings, gate.output, usage, options);
-  const bodyInput: PullRequestBodyInput = { gateOutput: gate.output, findings: review.findings, usage };
+  const stackedOn = await blockerOf(base, options);
+  const bodyInput: PullRequestBodyInput = { gateOutput: gate.output, findings: review.findings, usage, stackedOn };
   const body = written.body !== undefined ? buildWrittenPullRequestBody(written.body, bodyInput) : buildPullRequestBody(bodyInput, written.note);
-  const pullRequest = await publishPullRequest(issue, base, body, options);
+  const pullRequest = await publishPullRequest(issue, base, body, stackedOn, options);
   // Even when publishing failed, the work passed the Gate and waits for the human: the branch is still there.
   await store.transition(issue, "awaiting-merge");
   const published = pullRequest.published
@@ -446,6 +447,19 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   const bodyNote = written.result.written ? undefined : written.note;
   log(summary(`Issue ${issue.id} is awaiting merge.`, branch, `passed (log: ${gateLog})`, [published, bodyNote, report]));
   return { outcome: "awaiting-merge", issue, branch, review, usage, pullRequest, bodyWriter: written.result };
+}
+
+/** The blocker whose branch is `base`, for a Stacked Issue; undefined when `base` is the target branch. */
+async function blockerOf(base: string, { targetBranch, store }: IssueContext): Promise<StackedOnBlocker | undefined> {
+  if (base === targetBranch) return undefined;
+  const blocker = await store.byBranch(base);
+  return { id: blocker?.id, branch: base, pullRequest: blocker?.pullRequest };
+}
+
+/** The "Pull Request opened" comment's line naming the blocker a Stacked Issue is stacked on. */
+function stackedOnComment({ id, branch, pullRequest }: StackedOnBlocker): string {
+  const blocker = id === undefined ? `\`${branch}\`` : `Issue ${id} (\`${branch}\`${pullRequest === undefined ? "" : `, ${pullRequest}`})`;
+  return `Stacked on ${blocker}: merge it first.`;
 }
 
 /**
@@ -530,7 +544,13 @@ async function restoreBranch(
  * host does all this, never the sandbox. A failure is commented on the Issue and returned rather than thrown, so
  * the Run carries on.
  */
-async function publishPullRequest(issue: Issue, base: string, body: string, options: IssueContext): Promise<PublishResult> {
+async function publishPullRequest(
+  issue: Issue,
+  base: string,
+  body: string,
+  stackedOn: StackedOnBlocker | undefined,
+  options: IssueContext,
+): Promise<PublishResult> {
   const { store, publisher, repoDir, log } = options;
   const commitMessage = `Record Issue ${issue.id}'s Run comments`;
   const file = relative(repoDir, issue.path);
@@ -554,7 +574,8 @@ async function publishPullRequest(issue: Issue, base: string, body: string, opti
   try {
     await writeFile(issue.path, merged);
     await store.recordPullRequest(issue, url);
-    await store.comment(issue, `**Pull Request opened**: ${url}`);
+    const blocker = stackedOn === undefined ? "" : `\n\n${stackedOnComment(stackedOn)}`;
+    await store.comment(issue, `**Pull Request opened**: ${url}${blocker}`);
     await store.transition(issue, "awaiting-merge");
     await writeFile(issue.path, await commitIssueFile(repoDir, issue, merged, commitMessage));
     await publisher.push(issue.branch);

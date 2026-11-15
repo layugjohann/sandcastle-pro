@@ -11,7 +11,7 @@ export { AgentCallError, type Agent, type AgentCall, type AgentResult, type Effo
 export { runGate, type GateResult } from "./gate.js";
 export { createIssueStore, STATUSES, type BlockedIssue, type Issue, type IssueStore, type Status } from "./issue-store.js";
 export { runWorkflow, type BodyWriterResult, type IssueResult, type PublishResult, type RunOptions, type RunResult } from "./run-workflow.js";
-export { createGitHubPublisher, type Publisher, type PullRequestRequest, type PullRequestState } from "./publisher.js";
+export { createGitHubPublisher, type Publisher, type PullRequestRequest, type PullRequestState, type PullRequestStatus } from "./publisher.js";
 export { buildPullRequestBody, buildWrittenPullRequestBody, type PullRequestBodyInput } from "./pull-request-body.js";
 export type { IssueUsage } from "./usage.js";
 export { initProject, type InitOptions } from "./init.js";

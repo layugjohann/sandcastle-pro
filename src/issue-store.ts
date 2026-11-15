@@ -89,6 +89,8 @@ export interface IssueStore {
   blocked(): Promise<BlockedIssue[]>;
   /** Every Issue in `awaiting-merge`, whose branch the human may have merged. */
   awaitingMerge(): Promise<Issue[]>;
+  /** Every Issue whose `Stacked on:` line names `branch`, in any status. */
+  stackedOn(branch: string): Promise<Issue[]>;
   /** Sets the status. Leaving `paused` drops the pause record. */
   transition(issue: Issue, status: Status): Promise<void>;
   /** Marks the Issue `paused`, recording the session to continue and the stage it was in. */
@@ -317,6 +319,11 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
 
     async awaitingMerge() {
       const files = (await readIssues()).filter((f) => f.status === "awaiting-merge");
+      return Promise.all(files.map((f) => toIssue(f)));
+    },
+
+    async stackedOn(branch) {
+      const files = (await readIssues()).filter((f) => parseStackedOn(f.text) === branch);
       return Promise.all(files.map((f) => toIssue(f)));
     },
 

@@ -152,26 +152,39 @@ type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "tar
 
 /**
  * Moves each `awaiting-merge` Issue the human has merged to `done`. An Issue with a Pull Request is merged when
- * GitHub says so, which also sees squash merges; one without is merged when its branch is in the target branch.
+ * GitHub says it was merged into the target branch, which also sees squash merges; one without is merged when its
+ * branch is in the target branch. A Pull Request merged into another branch, such as a Stacked Issue's blocker
+ * branch, leaves its Issue `awaiting-merge`. A Pull Request closed without merging sends the Issues stacked on it to
+ * `ready-for-human`.
  */
 async function markMergedIssuesDone(context: IssueContext): Promise<void> {
   const { repoDir, targetBranch, store, log, publisher, config } = context;
   const mergedPullRequests: Issue[] = [];
   const caughtUp: Issue[] = [];
+  /** Issues this pass already moved, so a stale `awaiting-merge` read of one is not acted on again. */
+  const moved = new Set<string>();
   for (const issue of await store.awaitingMerge()) {
+    if (moved.has(issue.path)) continue;
     if (issue.pullRequest) {
-      let state;
+      let status;
       try {
-        state = await publisher.state(issue.pullRequest);
+        status = await publisher.state(issue.pullRequest);
       } catch (error) {
         log(`Warning: could not read the state of Issue ${issue.id}'s Pull Request ${issue.pullRequest}, so it stays awaiting-merge: ${errorMessage(error)}`);
         continue;
       }
-      if (state === "CLOSED") {
+      if (status.state === "CLOSED") {
         log(`Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was closed without being merged, so it stays awaiting-merge.`);
+        for (const stacked of await sendStackedIssuesToHuman(issue, context)) moved.add(stacked.path);
         continue;
       }
-      if (state !== "MERGED") continue;
+      if (status.state !== "MERGED") continue;
+      if (status.base !== targetBranch) {
+        log(
+          `Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was merged into ${status.base}, not the target branch ${targetBranch}, so it stays awaiting-merge. Merge its blocker first, so GitHub retargets the next Pull Request to ${targetBranch}.`,
+        );
+        continue;
+      }
       if (config.pullRequest) {
         // The Issue file was committed onto the branch, so the merge brings it in: catch up first.
         mergedPullRequests.push(issue);
@@ -184,11 +197,32 @@ async function markMergedIssuesDone(context: IssueContext): Promise<void> {
     await store.transition(issue, "done");
     log(`Issue ${issue.id} is done: ${issue.branch} is merged into ${targetBranch}.`);
   }
-  caughtUp.push(...(await pullMergedIssueFiles(mergedPullRequests, context)));
+  caughtUp.push(...(await pullMergedIssueFiles(mergedPullRequests.filter((i) => !moved.has(i.path)), context)));
   for (const issue of caughtUp) {
+    if (moved.has(issue.path)) continue;
     await store.transition(issue, "done");
     log(`Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`);
   }
+}
+
+/** Statuses a Stacked Issue keeps when its blocker's Pull Request is closed: finished, or already with the human. */
+const KEPT_WHEN_BLOCKER_CLOSED = new Set<Issue["status"]>(["done", "ready-for-human", "wontfix"]);
+
+/**
+ * Sends each Issue stacked on `blocker`'s branch to `ready-for-human`, with a comment naming the closed blocker,
+ * because the base its work builds on will not be merged. Returns the Issues it moved.
+ */
+async function sendStackedIssuesToHuman(blocker: Issue, { store, log }: IssueContext): Promise<Issue[]> {
+  const stacked = (await store.stackedOn(blocker.branch)).filter((i) => !KEPT_WHEN_BLOCKER_CLOSED.has(i.status));
+  for (const issue of stacked) {
+    await store.transition(issue, "ready-for-human");
+    await store.comment(
+      issue,
+      `**Blocker closed**: this Issue is stacked on \`${blocker.branch}\`, the branch of Issue ${blocker.id}, whose Pull Request ${blocker.pullRequest} was closed without being merged. Decide what to do with this work: rebase it onto another branch and remove the \`Stacked on:\` line, or close it.`,
+    );
+    log(`Issue ${issue.id} is ready-for-human: it is stacked on Issue ${blocker.id}, whose Pull Request ${blocker.pullRequest} was closed without being merged.`);
+  }
+  return stacked;
 }
 
 /** An Issue file whose local edit was discarded before the pull, kept so it can be put back. */

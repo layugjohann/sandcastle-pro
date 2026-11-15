@@ -396,3 +396,118 @@ describe("Resuming a paused Stacked Issue", () => {
     expect(output.join("\n")).toContain("Issue 02 is stacked on issue/01-first, which no longer exists locally, so it goes to ready-for-human.");
   });
 });
+
+describe("Detecting merges of Stacked Issues", () => {
+  let repo: TempRepo;
+  let origin: string;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const statusOf = (file: string) => /^Status:\s*(\S+)/m.exec(repo.read(file))?.[1];
+  const commentsOf = (file: string) => repo.read(file).split(/^## Comments$/m)[1] ?? "";
+  const PR_A = "https://github.com/owner/repo/pull/1";
+  const PR_B = "https://github.com/owner/repo/pull/2";
+
+  beforeEach(async () => {
+    repo = createTempRepo();
+    output = [];
+    origin = mkdtempSync(join(tmpdir(), "sandcastle-pro-origin-"));
+    git(origin, "init", "-q", "--bare", "-b", "main");
+    git(repo.dir, "remote", "add", "origin", origin);
+    repo.write(".scratch/feature/spec.md", "# Spec: feature\n\nSpec body.\n");
+    repo.write(A, issueFile({ title: "01: First slice", status: "ready-for-agent" }));
+    repo.write(B, issueFile({ title: "02: Second slice", status: "ready-for-agent", extra: "Blocked by: 01\n\nBuild on the first." }));
+    repo.commitAll("add issues");
+    git(repo.dir, "push", "-q", "-u", "origin", "main");
+    // One Run publishes 01, then 02 stacked on it.
+    const result = await runWorkflow({
+      repoDir: repo.dir,
+      agent: chainAgent(repo.dir),
+      publisher: fakePublisher({ pushFrom: repo.dir }),
+      config: config(true),
+      count: 2,
+      log,
+    });
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["01", "awaiting-merge"],
+      ["02", "awaiting-merge"],
+    ]);
+    expect(repo.read(B)).toMatch(/^Pull Request: https:\/\/github\.com\/owner\/repo\/pull\/2$/m);
+    output = [];
+  });
+  afterEach(() => {
+    repo.cleanup();
+    rmSync(origin, { recursive: true, force: true });
+  });
+
+  /** Merges each branch, in order, into `into` on `origin`, as the merge button would. */
+  function mergeOnOrigin(into: string, ...branches: string[]): void {
+    const clone = mkdtempSync(join(tmpdir(), "sandcastle-pro-clone-"));
+    try {
+      git(clone, "clone", "-q", origin, ".");
+      git(clone, "config", "user.email", "test@example.com");
+      git(clone, "config", "user.name", "Test");
+      git(clone, "config", "commit.gpgsign", "false");
+      git(clone, "checkout", "-q", into);
+      for (const branch of branches) git(clone, "merge", "-q", "--no-ff", "-m", `Merge ${branch}`, `origin/${branch}`);
+      git(clone, "push", "-q", "origin", into);
+    } finally {
+      rmSync(clone, { recursive: true, force: true });
+    }
+  }
+
+  it("marks a Stacked Issue done when its Pull Request was merged into the target branch", async () => {
+    mergeOnOrigin("main", "issue/01-first", "issue/02-second");
+    const publisher = fakePublisher({
+      states: { [PR_A]: { state: "MERGED", base: "main" }, [PR_B]: { state: "MERGED", base: "main" } },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(A)).toBe("done");
+    expect(statusOf(B)).toBe("done");
+    expect(output.join("\n")).toContain(`Issue 02 is done: its Pull Request ${PR_B} is merged.`);
+  });
+
+  it("keeps a Stacked Issue awaiting-merge with a warning when its Pull Request was merged into its blocker's branch", async () => {
+    mergeOnOrigin("issue/01-first", "issue/02-second");
+    const publisher = fakePublisher({
+      states: { [PR_A]: { state: "OPEN", base: "main" }, [PR_B]: { state: "MERGED", base: "issue/01-first" } },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(A)).toBe("awaiting-merge");
+    expect(statusOf(B)).toBe("awaiting-merge");
+    expect(output.join("\n")).toContain(
+      `Warning: Issue 02's Pull Request ${PR_B} was merged into issue/01-first, not the target branch main, so it stays awaiting-merge. Merge its blocker first`,
+    );
+  });
+
+  it("sends the Issues stacked on a closed blocker to ready-for-human with a comment naming it, once", async () => {
+    // A done Issue, and one already with the human, stacked on the same branch, keep their status.
+    repo.write(`${ISSUES}/03-done.md`, issueFile({ title: "03: Done", status: "done", extra: "Stacked on: issue/01-first" }));
+    repo.write(`${ISSUES}/04-human.md`, issueFile({ title: "04: Human", status: "ready-for-human", extra: "Stacked on: issue/01-first" }));
+    const publisher = fakePublisher({
+      states: { [PR_A]: { state: "CLOSED", base: "main" }, [PR_B]: { state: "OPEN", base: "issue/01-first" } },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(A)).toBe("awaiting-merge");
+    expect(statusOf(B)).toBe("ready-for-human");
+    expect(commentsOf(B)).toContain(
+      `**Blocker closed**: this Issue is stacked on \`issue/01-first\`, the branch of Issue 01, whose Pull Request ${PR_A} was closed without being merged.`,
+    );
+    expect(statusOf(`${ISSUES}/03-done.md`)).toBe("done");
+    expect(statusOf(`${ISSUES}/04-human.md`)).toBe("ready-for-human");
+    expect(commentsOf(`${ISSUES}/04-human.md`)).not.toContain("Blocker closed");
+    expect(publisher.stateLookups).toEqual([PR_A]);
+    const text = output.join("\n");
+    expect(text).toContain(`Warning: Issue 01's Pull Request ${PR_A} was closed without being merged, so it stays awaiting-merge.`);
+    expect(text).toContain(`Issue 02 is ready-for-human: it is stacked on Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
+
+    // A later Run does not comment again.
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+    expect(commentsOf(B).match(/Blocker closed/g)).toHaveLength(1);
+  });
+});

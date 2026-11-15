@@ -1,6 +1,7 @@
 # 03: Resume a paused Stacked Issue on its base
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/25
 Blocked by: 01
 
 Spec: `.scratch/stacked-issues/spec.md` (story 7)
@@ -26,3 +27,5 @@ Usage: Implementer 24 input, 7,958 output, 44,941 cache creation, 479,144 cache 
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-03-2026-11-15T18-16-57-865Z.log`).
 
 Usage: Body writer 2 input, 1,143 output, 17,866 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/25

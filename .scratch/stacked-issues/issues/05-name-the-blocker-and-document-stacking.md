@@ -1,6 +1,7 @@
 # 05: Name the blocker in the Pull Request, and document stacking
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/27
 Blocked by: 01
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 10, 16)
@@ -25,3 +26,5 @@ Usage: Implementer 38 input, 7,566 output, 48,031 cache creation, 843,910 cache 
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-05-2026-11-15T18-40-32-760Z.log`).
 
 Usage: Body writer 2 input, 1,101 output, 19,904 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/27

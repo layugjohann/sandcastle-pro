@@ -66,7 +66,9 @@ export type IssueResult =
   | ({ outcome: "spec-disagreement" } & ReviewedIssue)
   | ({ outcome: "gate-failed"; gate: GateResult } & ReviewedIssue)
   | ({ outcome: "critical-unfixed"; unfixedCritical: Finding[] } & ReviewedIssue)
-  | ({ outcome: "paused"; pausedAt: PausedAt } & IssueOutcomeDetails);
+  | ({ outcome: "paused"; pausedAt: PausedAt } & IssueOutcomeDetails)
+  /** A Stacked Issue whose `Stacked on:` branch is gone locally, so it went to `ready-for-human` without being worked on. */
+  | ({ outcome: "base-missing"; base: string } & IssueOutcomeDetails);
 
 export interface RunResult {
   /** The Issues this Run processed, in order. Empty when none was ready. */
@@ -292,6 +294,16 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   const { branch } = issue;
   // The branch this Issue's work is measured from and published against: its blocker's, for a Stacked Issue.
   const base = baseOf(issue, options.targetBranch);
+  if (base !== options.targetBranch && !(await branchExists(repoDir, base))) {
+    // The recorded base is what the work is built on: never silently rebuild it on the target branch.
+    await store.comment(
+      issue,
+      `**Stacked on a missing branch**: this Issue is stacked on \`${base}\`, which no longer exists locally, so the Run did not ${issue.status === "paused" ? "resume" : "start"} it. Restore the branch, or remove the \`Stacked on:\` line to base it on ${options.targetBranch}.`,
+    );
+    await store.transition(issue, "ready-for-human");
+    log(`Issue ${issue.id} is stacked on ${base}, which no longer exists locally, so it goes to ready-for-human.`);
+    return { outcome: "base-missing", issue, branch, base, usage: {} };
+  }
   const resume = issue.paused;
   const stacked = base !== options.targetBranch ? ` stacked on ${base}` : "";
   if (resume) log(`Resuming Issue ${issue.id} in the ${STAGE_NAMES[resume.stage]} on ${branch}${stacked}`);
@@ -675,6 +687,10 @@ function summary(headline: string, branch: string, gate: string, sections: reado
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await exec("git", args, { cwd })).stdout.trim();
+}
+
+async function branchExists(repoDir: string, branch: string): Promise<boolean> {
+  return (await git(repoDir, "branch", "--list", branch)) !== "";
 }
 
 async function ensureBranch(repoDir: string, branch: string, from: string): Promise<void> {

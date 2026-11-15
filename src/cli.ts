@@ -45,7 +45,7 @@ async function main(argv: string[]): Promise<number> {
   const auth = resolveAuth(repoDir);
   const agent = createSandcastleAgent({ repoDir, sandbox: config.sandbox, auth });
   const result = await runWorkflow({ repoDir, agent, config, store: createIssueStore(repoDir), count });
-  return result.issues.some((r) => r.outcome === "gate-failed" || r.outcome === "critical-unfixed") ? 1 : 0;
+  return result.issues.some((r) => r.outcome === "gate-failed" || r.outcome === "critical-unfixed" || r.outcome === "base-missing") ? 1 : 0;
 }
 
 async function init(args: string[]): Promise<number> {

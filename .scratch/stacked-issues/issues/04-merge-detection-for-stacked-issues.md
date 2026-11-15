@@ -1,6 +1,6 @@
 # 04: Merge detection for Stacked Issues
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/26
 Blocked by: 01
 

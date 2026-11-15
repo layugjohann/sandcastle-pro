@@ -22,6 +22,11 @@ export interface Config {
   sandbox: SandboxChoice;
   /** Publish each Issue that passes the Gate as a Pull Request. Off unless the project opts in. */
   pullRequest: boolean;
+  /**
+   * Start an Issue whose one unmerged blocker is `awaiting-merge` as a Stacked Issue, on that blocker's branch.
+   * Off unless the project opts in; needs `pullRequest`.
+   */
+  stack: boolean;
   /** The agent that writes a Pull Request's body, when `pullRequest` is on. An Issue's `Model:` line does not apply. */
   bodyWriter: { model: string; effort: Effort };
 }
@@ -32,6 +37,7 @@ export const DEFAULT_CONFIG: Omit<Config, "gate"> = {
   maxIterations: { implementer: 3, reviewSession: 1 },
   sandbox: "native",
   pullRequest: false,
+  stack: false,
   // Summarising a change that already passed the Gate needs no deep reasoning.
   bodyWriter: { model: "claude-sonnet-5-5", effort: "low" },
 };
@@ -54,9 +60,9 @@ function parseConfig(text: string): Config {
     throw configError(`is not valid JSON: ${(error as Error).message}`);
   }
   if (!isObject(raw)) throw configError("must be a JSON object.");
-  rejectUnknownKeys(raw, ["gate", "model", "effort", "maxIterations", "sandbox", "pullRequest", "bodyWriter"], "");
+  rejectUnknownKeys(raw, ["gate", "model", "effort", "maxIterations", "sandbox", "pullRequest", "stack", "bodyWriter"], "");
 
-  const { gate, model, effort, maxIterations, sandbox, pullRequest, bodyWriter } = raw;
+  const { gate, model, effort, maxIterations, sandbox, pullRequest, stack, bodyWriter } = raw;
   if (gate === undefined) throw configError(`is missing "gate": list the Gate commands, e.g. ["npm test"].`);
   if (!isGate(gate)) {
     throw configError(`"gate" must be a non-empty list of command strings, got ${JSON.stringify(gate)}.`);
@@ -76,6 +82,13 @@ function parseConfig(text: string): Config {
   if (pullRequest !== undefined && typeof pullRequest !== "boolean") {
     throw configError(`"pullRequest" must be true or false, got ${JSON.stringify(pullRequest)}.`);
   }
+  if (stack !== undefined && typeof stack !== "boolean") {
+    throw configError(`"stack" must be true or false, got ${JSON.stringify(stack)}.`);
+  }
+  if (stack === true && pullRequest !== true) {
+    // A Stacked Issue's base is its blocker's Pull Request branch; without Pull Requests the human would merge local branches in order by hand.
+    throw configError(`has "stack": true, which needs "pullRequest": true. Turn on "pullRequest", or turn off "stack".`);
+  }
   if (maxIterations !== undefined && !isObject(maxIterations)) {
     throw configError(`"maxIterations" must be an object, got ${JSON.stringify(maxIterations)}.`);
   }
@@ -94,6 +107,7 @@ function parseConfig(text: string): Config {
     maxIterations: { ...DEFAULT_CONFIG.maxIterations, ...(limits as Partial<Config["maxIterations"]>) },
     sandbox: (sandbox as SandboxChoice | undefined) ?? DEFAULT_CONFIG.sandbox,
     pullRequest: (pullRequest as boolean | undefined) ?? DEFAULT_CONFIG.pullRequest,
+    stack: (stack as boolean | undefined) ?? DEFAULT_CONFIG.stack,
     bodyWriter: { ...DEFAULT_CONFIG.bodyWriter, ...(writer as Partial<Config["bodyWriter"]>) },
   };
 }

@@ -14,6 +14,11 @@ a Run only implements and reviews them.
 
 - `Status:` the Issue's status (below). Required: an Issue without a known status is never picked.
 - `Blocked by:` numbers of Issues in the same `issues/` directory that must be `done` first, e.g. `Blocked by: 02, 05`. Missing or `None` means unblocked.
+  With `"stack": true` in the config (which needs `"pullRequest": true`), an Issue whose only blocker that is not
+  `done` is `awaiting-merge` starts as a Stacked Issue: its branch is cut from that blocker's branch, its Review Session
+  only sees its own commits, and its Pull Request targets that branch. Merge the chain in order, with merge commits.
+- `Stacked on:` the blocker branch a Stacked Issue is built on, e.g. `Stacked on: issue/01-first`. Set by a Run; leave it
+  alone. Without it, the Issue is based on the target branch.
 - `Spec:` the Spec's path from the repo root, e.g. `Spec: .scratch/<feature>/spec.md`.
   Without it, `spec.md` next to the `issues/` directory is used.
 - `Model:` optional; overrides the configured model for this Issue only, e.g. `Model: claude-sonnet-5-5`.

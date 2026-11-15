@@ -13,7 +13,7 @@ const exec = promisify(execFile);
 export interface PullRequestRequest {
   /** The Issue's branch, pushed to `origin` and used as the head. */
   branch: string;
-  /** The Run's target branch. */
+  /** The branch the Pull Request merges into: the Run's target branch, or the blocker's branch for a Stacked Issue. */
   base: string;
   title: string;
   body: string;

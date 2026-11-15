@@ -8,7 +8,7 @@ import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Age
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, withoutNpmExecPath, type GateResult } from "./gate.js";
-import { createIssueStore, mergeIssueFile, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
+import { baseOf, createIssueStore, mergeIssueFile, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
@@ -27,7 +27,10 @@ export interface RunOptions {
   store?: IssueStore;
   /** Publishes Pull Requests and reads their state, when `config.pullRequest` is on. Defaults to `git` and `gh`. */
   publisher?: Publisher;
-  /** Branch the Issue branch starts from. Defaults to the current branch. */
+  /**
+   * Branch the Issue branch starts from, unless it is a Stacked Issue, and the branch the Run pulls and detects merges
+   * into. Defaults to the current branch.
+   */
   targetBranch?: string;
   /** The most Issues this Run processes, one after another. Defaults to 1. */
   count?: number;
@@ -79,7 +82,6 @@ export interface RunResult {
  */
 export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   const log = options.log ?? ((line: string) => console.log(line));
-  const store = options.store ?? createIssueStore(options.repoDir);
   const count = options.count ?? DEFAULT_COUNT;
   if (!Number.isInteger(count) || count < 1) {
     throw new Error(`count must be a positive whole number, got ${count}.`);
@@ -87,6 +89,7 @@ export async function runWorkflow(options: RunOptions): Promise<RunResult> {
   const targetBranch = options.targetBranch ?? (await git(options.repoDir, "branch", "--show-current"));
   if (!targetBranch) throw new Error("No target branch: check out a branch, or pass targetBranch.");
   const config = options.config ?? (await loadConfig(options.repoDir));
+  const store = options.store ?? createIssueStore(options.repoDir, { stack: config.stack });
   const publisher = options.publisher ?? createGitHubPublisher(options.repoDir);
   const context = { ...options, config, targetBranch, log, store, publisher };
   await markMergedIssuesDone(context);
@@ -280,14 +283,18 @@ async function isMerged(repoDir: string, branch: string, target: string): Promis
 }
 
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
-  const { repoDir, log, store, config, targetBranch: target } = options;
+  const { repoDir, log, store, config } = options;
   const { branch } = issue;
+  // The branch this Issue's work is measured from and published against: its blocker's, for a Stacked Issue.
+  const base = baseOf(issue, options.targetBranch);
   const resume = issue.paused;
-  if (resume) log(`Resuming Issue ${issue.id} in the ${STAGE_NAMES[resume.stage]} on ${branch}`);
-  else if (issue.status === "paused") log(`Issue ${issue.id} is paused but its pause record is unreadable; starting it fresh on ${branch}`);
-  else log(`Starting Issue ${issue.id} on ${branch}`);
+  const stacked = base !== options.targetBranch ? ` stacked on ${base}` : "";
+  if (resume) log(`Resuming Issue ${issue.id} in the ${STAGE_NAMES[resume.stage]} on ${branch}${stacked}`);
+  else if (issue.status === "paused") log(`Issue ${issue.id} is paused but its pause record is unreadable; starting it fresh on ${branch}${stacked}`);
+  else log(`Starting Issue ${issue.id} on ${branch}${stacked}`);
+  if (issue.stackOn !== undefined) await store.recordStackedOn(issue, issue.stackOn);
   await store.transition(issue, "in-progress");
-  await ensureBranch(repoDir, branch, target);
+  await ensureBranch(repoDir, branch, base);
 
   const { effort } = config;
   const model = issue.model ?? config.model;
@@ -316,8 +323,8 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
       ? buildResumePrompt("review-session")
       : buildReviewPrompt(issue, {
           branch,
-          commits: await git(repoDir, "log", "--format=%h %s", `${target}..${branch}`),
-          diff: await git(repoDir, "diff", `${target}...${branch}`),
+          commits: await git(repoDir, "log", "--format=%h %s", `${base}..${branch}`),
+          diff: await git(repoDir, "diff", `${base}...${branch}`),
           // Loaded only here: the Implementer never pays for Coding Standards.
           standards: await loadCodingStandards(repoDir),
           gate: config.gate,
@@ -376,10 +383,10 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
     return { outcome: "awaiting-merge", issue, branch, review, usage };
   }
 
-  const written = await writeBody(issue, review.findings, gate.output, usage, options);
+  const written = await writeBody(issue, base, review.findings, gate.output, usage, options);
   const bodyInput: PullRequestBodyInput = { gateOutput: gate.output, findings: review.findings, usage };
   const body = written.body !== undefined ? buildWrittenPullRequestBody(written.body, bodyInput) : buildPullRequestBody(bodyInput, written.note);
-  const pullRequest = await publishPullRequest(issue, body, options);
+  const pullRequest = await publishPullRequest(issue, base, body, options);
   // Even when publishing failed, the work passed the Gate and waits for the human: the branch is still there.
   await store.transition(issue, "awaiting-merge");
   const published = pullRequest.published
@@ -397,10 +404,11 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
  */
 async function writeBody(
   issue: Issue,
+  base: string,
   findings: readonly Finding[],
   gateOutput: string,
   usage: IssueUsage,
-  { repoDir, agent, config, targetBranch, store, log }: IssueContext,
+  { repoDir, agent, config, store, log }: IssueContext,
 ): Promise<{ body?: string; result: BodyWriterResult; note?: string }> {
   const { branch } = issue;
   const tip = await git(repoDir, "rev-parse", branch);
@@ -410,8 +418,8 @@ async function writeBody(
       stage: "body-writer",
       prompt: buildBodyWriterPrompt(issue, {
         branch,
-        commits: await git(repoDir, "log", "--format=%h %s", `${targetBranch}..${branch}`),
-        diff: await git(repoDir, "diff", `${targetBranch}...${branch}`),
+        commits: await git(repoDir, "log", "--format=%h %s", `${base}..${branch}`),
+        diff: await git(repoDir, "diff", `${base}...${branch}`),
         findings,
         gateOutput: truncateStart(gateOutput.trim()),
       }),
@@ -465,24 +473,24 @@ async function restoreBranch(
 
 /**
  * Merges the Issue file, with its Run comments, onto the Issue's branch, pushes the branch and opens its Pull
- * Request against the target branch. Once it is open, the URL is recorded, the Issue moves to `awaiting-merge`,
+ * Request against `base`: the target branch, or the blocker's branch for a Stacked Issue. Once it is open, the URL is recorded, the Issue moves to `awaiting-merge`,
  * and the Issue file is merged onto the branch and pushed again, so the working copy's file matches the branch
  * tip. When publishing fails, the branch is put back as it was, so the Issue-file commit never lingers on it. The
  * host does all this, never the sandbox. A failure is commented on the Issue and returned rather than thrown, so
  * the Run carries on.
  */
-async function publishPullRequest(issue: Issue, body: string, options: IssueContext): Promise<PublishResult> {
-  const { store, publisher, targetBranch, repoDir, log } = options;
+async function publishPullRequest(issue: Issue, base: string, body: string, options: IssueContext): Promise<PublishResult> {
+  const { store, publisher, repoDir, log } = options;
   const commitMessage = `Record Issue ${issue.id}'s Run comments`;
   const file = relative(repoDir, issue.path);
   const tip = await git(repoDir, "rev-parse", issue.branch);
   let url: string;
   let merged: string;
   try {
-    merged = await commitIssueFile(repoDir, issue, (await showFile(repoDir, targetBranch, file)) ?? "", commitMessage);
+    merged = await commitIssueFile(repoDir, issue, (await showFile(repoDir, base, file)) ?? "", commitMessage);
     ({ url } = await publisher.publish({
       branch: issue.branch,
-      base: targetBranch,
+      base,
       title: `Issue ${issue.id}: ${issue.title}`,
       body,
     }));
@@ -572,7 +580,7 @@ async function recoverFromFailure(issue: Issue, stage: PausableStage, error: unk
   }
   await commitWorkInProgress(repoDir, branch, `WIP: ${stageName} failed (sandcastle-pro)`);
   await store.transition(issue, "ready-for-agent");
-  const deleted = await deleteBranchIfEmpty(repoDir, branch, targetBranch);
+  const deleted = await deleteBranchIfEmpty(repoDir, branch, baseOf(issue, targetBranch));
   log(`Issue ${issue.id} is back to ready-for-agent: the ${stageName} failed.${deleted ? ` Deleted the empty ${branch}.` : ""}`);
 }
 

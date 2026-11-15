@@ -77,6 +77,9 @@ describe("Project config", () => {
     ["misspelt key", `{"gate": ["true"], "modle": "x"}`, /unknown key "modle"/],
     ["unknown sandbox", `{"gate": ["true"], "sandbox": "vm"}`, /"sandbox" must be one of native, docker, got "vm"/],
     ["pullRequest not a boolean", `{"gate": ["true"], "pullRequest": "yes"}`, /"pullRequest" must be true or false, got "yes"/],
+    ["stack not a boolean", `{"gate": ["true"], "pullRequest": true, "stack": "yes"}`, /"stack" must be true or false, got "yes"/],
+    ["stack without Pull Requests", `{"gate": ["true"], "stack": true}`, /"stack": true, which needs "pullRequest": true/],
+    ["stack with pullRequest off", `{"gate": ["true"], "pullRequest": false, "stack": true}`, /"stack": true, which needs "pullRequest": true/],
     ["misspelt pullRequest", `{"gate": ["true"], "pullRequests": true}`, /unknown key "pullRequests"/],
     ["misspelt limit", `{"gate": ["true"], "maxIterations": {"review": 2}}`, /unknown key "maxIterations.review"/],
   ])("names the problem when the config has %s", async (_case, text, problem) => {
@@ -108,6 +111,17 @@ describe("Project config", () => {
 
     repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: false }));
     expect((await loadConfig(repo.dir)).pullRequest).toBe(false);
+  });
+
+  it("leaves stacking off unless the config turns it on", async () => {
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: true }));
+    expect((await loadConfig(repo.dir)).stack).toBe(false);
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: true, stack: true }));
+    expect((await loadConfig(repo.dir)).stack).toBe(true);
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], stack: false }));
+    expect((await loadConfig(repo.dir)).stack).toBe(false);
   });
 
   it("gives the body writer Sonnet at low effort unless the config overrides either", async () => {

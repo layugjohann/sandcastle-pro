@@ -1,6 +1,6 @@
 # 03: Resume a paused Stacked Issue on its base
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/25
 Blocked by: 01
 

@@ -1,6 +1,6 @@
 # 01: Stack a two-Issue chain in one Run
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/23
 Blocked by: None
 

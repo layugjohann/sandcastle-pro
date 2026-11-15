@@ -1,6 +1,6 @@
 # 07: Clearer blocker wording, and one rule for the bold style
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/29
 Blocked by: None
 

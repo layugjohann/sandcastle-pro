@@ -38,6 +38,26 @@ export interface Issue {
   paused: PausedAt | undefined;
   /** The URL on the Issue's `Pull Request:` line, once a Run has published it. */
   pullRequest: string | undefined;
+  /** The blocker branch on the Issue's `Stacked on:` line, which a Run writes when it starts a Stacked Issue. */
+  stackedOn: string | undefined;
+  /**
+   * The branch of the one unmerged, `awaiting-merge` blocker `next()` picked this Issue on top of, when stacking is
+   * on and the Issue has no `Stacked on:` line yet. The Run records it with `recordStackedOn()`.
+   */
+  stackOn: string | undefined;
+}
+
+/** The branch an Issue's work is measured from and published against: its `Stacked on:` branch, else `target`. */
+export function baseOf(issue: Pick<Issue, "stackedOn" | "stackOn">, target: string): string {
+  return issue.stackedOn ?? issue.stackOn ?? target;
+}
+
+export interface IssueStoreOptions {
+  /**
+   * Treat a blocker as satisfied when it is the Issue's only unsatisfied blocker and is `awaiting-merge`, so the Issue
+   * can start as a Stacked Issue. Off by default, when only `done` blockers are satisfied.
+   */
+  stack?: boolean;
 }
 
 export interface PausedAt {
@@ -52,9 +72,12 @@ export interface BlockedIssue {
 }
 
 export interface IssueStore {
-  /** The next Issue a Run should work on: the lowest-numbered `paused` one, else the lowest-numbered unblocked `ready-for-agent` one, else null. */
+  /**
+   * The next Issue a Run should work on: the lowest-numbered `paused` one, else the lowest-numbered unblocked
+   * `ready-for-agent` one, else null. With stacking on, a sole `awaiting-merge` blocker does not block.
+   */
   next(): Promise<Issue | null>;
-  /** The `ready-for-agent` Issues that `next()` skips because a blocker is not `done`. */
+  /** The `ready-for-agent` Issues that `next()` skips, each with its blockers that are not `done`. */
   blocked(): Promise<BlockedIssue[]>;
   /** Every Issue in `awaiting-merge`, whose branch the human may have merged. */
   awaitingMerge(): Promise<Issue[]>;
@@ -66,6 +89,8 @@ export interface IssueStore {
   comment(issue: Issue, text: string): Promise<void>;
   /** Records the Issue's Pull Request URL as a `Pull Request:` line near the top, replacing any earlier one. */
   recordPullRequest(issue: Issue, url: string): Promise<void>;
+  /** Records the branch a Stacked Issue is based on as a `Stacked on:` line near the top, replacing any earlier one. */
+  recordStackedOn(issue: Issue, branch: string): Promise<void>;
 }
 
 const ISSUE_FILE = /^(\d+)-(.+)\.md$/;
@@ -74,6 +99,27 @@ const PAUSED_SESSION_LINE = /^Paused session:[ \t]*(.*)$/m;
 const PAUSED_STAGE_LINE = /^Paused stage:[ \t]*(.*)$/m;
 const PAUSE_RECORD = /^Paused (session|stage):.*\n?/gm;
 const PULL_REQUEST_LINE = /^Pull Request:[ \t]*(.*)$/m;
+/** Plain, or bold as in `**Stacked on:** issue/01-first`. */
+const STACKED_ON_LINE = /^(?:\*\*)?Stacked on:(?:\*\*)?[ \t]*(.*)$/m;
+const BLOCKED_BY_LINE = /^(?:\*\*)?Blocked by:(?:\*\*)?.*$/m;
+
+/** The branch on the `Stacked on:` line above `## Comments`, or undefined when there is none. */
+function parseStackedOn(text: string): string | undefined {
+  const value = STACKED_ON_LINE.exec(headerOf(text))?.[1]?.replace(/[`*]/g, "").trim();
+  return value || undefined;
+}
+
+/** The `Stacked on:` line for `branch`, in bold when the header's `Status:` or `Blocked by:` line is. */
+function stackedOnLine(header: string, branch: string): string {
+  return /^\*\*(?:Status|Blocked by):\*\*/m.test(header) ? `**Stacked on:** ${branch}` : `Stacked on: ${branch}`;
+}
+
+/** `header` with `line` placed under its `Blocked by:` line, else its `Status:` line, else its title. */
+function insertStackedOn(header: string, line: string): string {
+  if (BLOCKED_BY_LINE.test(header)) return header.replace(BLOCKED_BY_LINE, (blockedBy) => `${blockedBy}\n${line}`);
+  if (STATUS_LINE.test(header)) return header.replace(STATUS_LINE, (status) => `${status}\n${line}`);
+  return insertAfterTitle(header, line);
+}
 
 /** The URL on the `Pull Request:` line above `## Comments`, or undefined when there is none. */
 function parsePullRequest(text: string): string | undefined {
@@ -140,15 +186,36 @@ interface IssueFile {
   blockedBy: string[];
 }
 
+/** The Issue file `blocker` names, resolved within `file`'s issues directory. */
+function findBlocker(file: IssueFile, blocker: string, all: readonly IssueFile[]): IssueFile | undefined {
+  return all.find((f) => f.number === Number(blocker) && dirname(f.path) === dirname(file.path));
+}
+
 /** `file`'s blockers that are not `done`. Blockers resolve within the same issues directory. */
 function unfinishedBlockers(file: IssueFile, all: readonly IssueFile[]): string[] {
-  const isDone = (blocker: string) =>
-    all.some((f) => f.number === Number(blocker) && dirname(f.path) === dirname(file.path) && f.status === "done");
-  return file.blockedBy.filter((blocker) => !isDone(blocker));
+  return file.blockedBy.filter((blocker) => findBlocker(file, blocker, all)?.status !== "done");
+}
+
+/**
+ * Whether `file` can start now. Without stacking, every blocker must be `done`. With it, the one unfinished blocker
+ * may be `awaiting-merge`, and its branch is returned as `stackOn`.
+ */
+function readiness(file: IssueFile, all: readonly IssueFile[], stack: boolean): { ready: boolean; stackOn?: string } {
+  const unfinished = unfinishedBlockers(file, all);
+  if (unfinished.length === 0) return { ready: true };
+  if (!stack || unfinished.length > 1) return { ready: false };
+  const blocker = findBlocker(file, unfinished[0]!, all);
+  if (blocker?.status !== "awaiting-merge") return { ready: false };
+  return { ready: true, stackOn: branchOf(blocker.path) };
+}
+
+function branchOf(path: string): string {
+  return `issue/${basename(path, ".md")}`;
 }
 
 /** An Issue Store over `.scratch/<feature>/issues/NN-slug.md` files. */
-export function createIssueStore(repoDir: string): IssueStore {
+export function createIssueStore(repoDir: string, options: IssueStoreOptions = {}): IssueStore {
+  const stack = options.stack ?? false;
   const scratch = join(repoDir, ".scratch");
 
   async function listIssueFiles(): Promise<{ id: string; number: number; path: string }[]> {
@@ -187,8 +254,9 @@ export function createIssueStore(repoDir: string): IssueStore {
     return files;
   }
 
-  async function toIssue(file: IssueFile): Promise<Issue> {
+  async function toIssue(file: IssueFile, stackOn?: string): Promise<Issue> {
     const slug = basename(file.path, ".md");
+    const stackedOn = parseStackedOn(file.text);
     return {
       id: file.id,
       title: parseTitle(file.text) ?? slug.replace(/^\d+-/, "").replaceAll("-", " "),
@@ -200,6 +268,8 @@ export function createIssueStore(repoDir: string): IssueStore {
       status: file.status,
       paused: file.status === "paused" ? parsePausedAt(file.text) : undefined,
       pullRequest: parsePullRequest(file.text),
+      stackedOn,
+      stackOn: stackedOn === undefined ? stackOn : undefined,
     };
   }
 
@@ -208,21 +278,25 @@ export function createIssueStore(repoDir: string): IssueStore {
       const files = await readIssues();
       const paused = files.find((f) => f.status === "paused");
       if (paused) return toIssue(paused);
-      const ready = files.find((f) => f.status === "ready-for-agent" && unfinishedBlockers(f, files).length === 0);
-      return ready ? toIssue(ready) : null;
+      for (const file of files) {
+        if (file.status !== "ready-for-agent") continue;
+        const { ready, stackOn } = readiness(file, files, stack);
+        if (ready) return toIssue(file, stackOn);
+      }
+      return null;
     },
 
     async blocked() {
       const files = await readIssues();
       return files
-        .filter((f) => f.status === "ready-for-agent")
+        .filter((f) => f.status === "ready-for-agent" && !readiness(f, files, stack).ready)
         .map((f) => ({ id: f.id, blockers: unfinishedBlockers(f, files) }))
         .filter((b) => b.blockers.length > 0);
     },
 
     async awaitingMerge() {
       const files = (await readIssues()).filter((f) => f.status === "awaiting-merge");
-      return Promise.all(files.map(toIssue));
+      return Promise.all(files.map((f) => toIssue(f)));
     },
 
     async transition(issue, status) {
@@ -252,6 +326,12 @@ export function createIssueStore(repoDir: string): IssueStore {
           : insertAfterTitle(header, line);
       await writeFile(issue.path, updated + text.slice(header.length));
     },
+
+    async recordStackedOn(issue, branch) {
+      const text = await readFile(issue.path, "utf8");
+      const line = stackedOnLine(headerOf(text), branch);
+      await writeFile(issue.path, withHeaderLine(text, STACKED_ON_LINE, line, (h) => insertStackedOn(h, line)));
+    },
   };
 }
 
@@ -275,7 +355,7 @@ function insertAfterTitle(text: string, line: string): string {
 /**
  * Merges the working copy's Issue file into the Issue branch's copy, never overwriting the branch's copy: the result
  * is `branchCopy` (with the Implementer's ticked boxes and any comments of its own), with the working copy's
- * `Status:` and `Pull Request:` lines, followed by the comments the working copy added since `base`. `base` is the
+ * `Status:`, `Pull Request:` and `Stacked on:` lines, followed by the comments the working copy added since `base`. `base` is the
  * file both last agreed on: the target branch's committed version, or the file last merged onto the branch.
  * Throws when the working copy's comments do not extend `base`'s, since the added comments can't be told apart.
  */
@@ -297,6 +377,8 @@ export function mergeIssueFile(branchCopy: string, working: string, base: string
       STATUS_LINE.test(h) ? h.replace(STATUS_LINE, (line) => `${line}\n${pullRequest}`) : insertAfterTitle(h, pullRequest),
     );
   }
+  const stackedOn = STACKED_ON_LINE.exec(header)?.[0];
+  if (stackedOn !== undefined) merged = withHeaderLine(merged, STACKED_ON_LINE, stackedOn, (h) => insertStackedOn(h, stackedOn));
   if (added === "") return merged;
   merged = merged.replace(/\s*$/, "\n");
   if (!/^## Comments[ \t]*$/m.test(merged)) merged += "\n## Comments\n";

@@ -155,53 +155,56 @@ type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "tar
  * GitHub says it was merged into the target branch, which also sees squash merges; one without is merged when its
  * branch is in the target branch. A Pull Request merged into another branch, such as a Stacked Issue's blocker
  * branch, leaves its Issue `awaiting-merge`. A Pull Request closed without merging sends the Issues stacked on it to
- * `ready-for-human`.
+ * `ready-for-human`, except those whose own Pull Request reached the target branch.
+ *
+ * Every state is read before anything is moved, so the outcome does not depend on the order Issues are visited in.
  */
 async function markMergedIssuesDone(context: IssueContext): Promise<void> {
   const { repoDir, targetBranch, store, log, publisher, config } = context;
-  const mergedPullRequests: Issue[] = [];
-  const caughtUp: Issue[] = [];
-  /** Issues this pass already moved, so a stale `awaiting-merge` read of one is not acted on again. */
-  const moved = new Set<string>();
+  /** Issues whose work is on the target branch: `pull` still needs its file caught up, `ready` does not. */
+  const merged = { pull: [] as Issue[], ready: [] as Issue[] };
+  const closedBlockers: Issue[] = [];
   for (const issue of await store.awaitingMerge()) {
-    if (moved.has(issue.path)) continue;
-    if (issue.pullRequest) {
-      let status;
-      try {
-        status = await publisher.state(issue.pullRequest);
-      } catch (error) {
-        log(`Warning: could not read the state of Issue ${issue.id}'s Pull Request ${issue.pullRequest}, so it stays awaiting-merge: ${errorMessage(error)}`);
-        continue;
-      }
-      if (status.state === "CLOSED") {
-        log(`Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was closed without being merged, so it stays awaiting-merge.`);
-        for (const stacked of await sendStackedIssuesToHuman(issue, context)) moved.add(stacked.path);
-        continue;
-      }
-      if (status.state !== "MERGED") continue;
-      if (status.base !== targetBranch) {
-        log(
-          `Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was merged into ${status.base}, not the target branch ${targetBranch}, so it stays awaiting-merge. Merge its blocker first, so GitHub retargets the next Pull Request to ${targetBranch}.`,
-        );
-        continue;
-      }
-      if (config.pullRequest) {
-        // The Issue file was committed onto the branch, so the merge brings it in: catch up first.
-        mergedPullRequests.push(issue);
-      } else {
-        caughtUp.push(issue);
-      }
+    if (!issue.pullRequest) {
+      if (await isMerged(repoDir, issue.branch, targetBranch)) merged.ready.push(issue);
       continue;
     }
-    if (!(await isMerged(repoDir, issue.branch, targetBranch))) continue;
-    await store.transition(issue, "done");
-    log(`Issue ${issue.id} is done: ${issue.branch} is merged into ${targetBranch}.`);
+    let status;
+    try {
+      status = await publisher.state(issue.pullRequest);
+    } catch (error) {
+      log(`Warning: could not read the state of Issue ${issue.id}'s Pull Request ${issue.pullRequest}, so it stays awaiting-merge: ${errorMessage(error)}`);
+      continue;
+    }
+    if (status.state === "CLOSED") {
+      closedBlockers.push(issue);
+      continue;
+    }
+    if (status.state !== "MERGED") continue;
+    if (status.base !== targetBranch) {
+      log(
+        `Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was merged into ${status.base}, not the target branch ${targetBranch}, so it stays awaiting-merge. Merge its blocker first, so GitHub retargets the next Pull Request to ${targetBranch}.`,
+      );
+      continue;
+    }
+    // The Issue file was committed onto the branch, so the merge brings it in: catch up first.
+    (config.pullRequest ? merged.pull : merged.ready).push(issue);
   }
-  caughtUp.push(...(await pullMergedIssueFiles(mergedPullRequests.filter((i) => !moved.has(i.path)), context)));
-  for (const issue of caughtUp) {
-    if (moved.has(issue.path)) continue;
+
+  // The one guard against acting on an Issue twice: an Issue whose work reached the target branch is only ever
+  // marked `done`, even when it is stacked on a closed blocker, and the closed-blocker pass below skips it.
+  const onTarget = new Set([...merged.pull, ...merged.ready].map((i) => i.path));
+  for (const issue of [...merged.ready, ...(await pullMergedIssueFiles(merged.pull, context))]) {
     await store.transition(issue, "done");
-    log(`Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`);
+    log(
+      issue.pullRequest
+        ? `Issue ${issue.id} is done: its Pull Request ${issue.pullRequest} is merged.`
+        : `Issue ${issue.id} is done: ${issue.branch} is merged into ${targetBranch}.`,
+    );
+  }
+  for (const blocker of closedBlockers) {
+    log(`Warning: Issue ${blocker.id}'s Pull Request ${blocker.pullRequest} was closed without being merged, so it stays awaiting-merge.`);
+    await sendStackedIssuesToHuman(blocker, context, onTarget);
   }
 }
 
@@ -210,10 +213,11 @@ const KEPT_WHEN_BLOCKER_CLOSED = new Set<Issue["status"]>(["done", "ready-for-hu
 
 /**
  * Sends each Issue stacked on `blocker`'s branch to `ready-for-human`, with a comment naming the closed blocker,
- * because the base its work builds on will not be merged. Returns the Issues it moved.
+ * because the base its work builds on will not be merged. Skips the Issues in `onTarget`, whose work reached the
+ * target branch anyway.
  */
-async function sendStackedIssuesToHuman(blocker: Issue, { store, log }: IssueContext): Promise<Issue[]> {
-  const stacked = (await store.stackedOn(blocker.branch)).filter((i) => !KEPT_WHEN_BLOCKER_CLOSED.has(i.status));
+async function sendStackedIssuesToHuman(blocker: Issue, { store, log }: IssueContext, onTarget: ReadonlySet<string>): Promise<void> {
+  const stacked = (await store.stackedOn(blocker.branch)).filter((i) => !KEPT_WHEN_BLOCKER_CLOSED.has(i.status) && !onTarget.has(i.path));
   for (const issue of stacked) {
     await store.transition(issue, "ready-for-human");
     await store.comment(
@@ -222,12 +226,11 @@ async function sendStackedIssuesToHuman(blocker: Issue, { store, log }: IssueCon
     );
     log(`Issue ${issue.id} is ready-for-human: it is stacked on Issue ${blocker.id}, whose Pull Request ${blocker.pullRequest} was closed without being merged.`);
   }
-  return stacked;
 }
 
 /** An Issue file whose local edit was discarded before the pull, kept so it can be put back. */
 interface DiscardedEdit {
-  issue: Issue;
+  path: string;
   file: string;
   content: Buffer;
   /** The file's `git ls-files -s` entry before the discard, or empty when it was not in the index. */
@@ -235,52 +238,89 @@ interface DiscardedEdit {
 }
 
 /**
- * Fast-forwards the target branch over the merged Pull Requests of `issues`. Each Issue file's local edit, which
- * would make `git pull` refuse, is discarded first, but only when it matches the file at the tip of the Issue's
- * branch, so nothing the merge does not bring back is lost. When a check or the pull fails, the files are put
- * back as they were and a warning is logged. Returns the Issues that caught up. Other files are never touched.
+ * Fast-forwards the target branch over the merged Pull Requests of `issues`. A merged Stacked Issue's branch also
+ * holds the Issue files of the blockers it is stacked on, so the pull brings those in too. Each such file's local
+ * edit, which would make `git pull` refuse, is discarded first, but only when it matches the file at the tip of the
+ * merged Issue's branch, so nothing the merge does not bring back is lost. When a check or the pull fails, the files
+ * are put back as they were and a warning is logged. Returns the Issues that caught up. Other files are never touched.
  */
-async function pullMergedIssueFiles(issues: readonly Issue[], { repoDir, targetBranch, log }: IssueContext): Promise<Issue[]> {
+async function pullMergedIssueFiles(issues: readonly Issue[], context: IssueContext): Promise<Issue[]> {
+  const { repoDir, targetBranch, log } = context;
   if (issues.length === 0) return [];
   const warn = (issue: Issue, file: string, reason: string) =>
     log(`Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} is merged, but ${file} was left as it is and the Issue stays awaiting-merge: ${reason}`);
   const current = await git(repoDir, "branch", "--show-current");
   const discarded: DiscardedEdit[] = [];
+  const pulled: Issue[] = [];
   for (const issue of issues) {
     const file = relative(repoDir, issue.path);
-    const reason =
-      current !== targetBranch
-        ? `the target branch ${targetBranch} is not checked out (the working copy is on ${current || "a detached HEAD"}).`
-        : await differenceFromBranch(repoDir, file, issue.branch);
-    if (reason) {
-      warn(issue, file, reason);
+    if (current !== targetBranch) {
+      warn(issue, file, `the target branch ${targetBranch} is not checked out (the working copy is on ${current || "a detached HEAD"}).`);
       continue;
     }
-    const edit: DiscardedEdit = {
-      issue,
-      file,
-      content: await readFile(issue.path),
-      indexEntry: await git(repoDir, "ls-files", "-s", "--", file),
-    };
-    try {
-      await git(repoDir, "checkout", "HEAD", "--", file);
-      discarded.push(edit);
-    } catch (error) {
-      await restoreEdit(repoDir, edit);
-      warn(issue, file, `could not discard its local edit: ${errorMessage(error)}`);
+    // Its own file always; a blocker's file only when it has a local edit the pull would refuse to overwrite. A file
+    // an earlier Issue's check already discarded is skipped: the pull brings it in for both.
+    const already = new Set(discarded.map((edit) => edit.path));
+    const paths = already.has(issue.path) ? [] : [issue.path];
+    for (const path of await blockerPaths(issue, context)) {
+      if (!already.has(path) && (await git(repoDir, "status", "--porcelain", "--", relative(repoDir, path)))) paths.push(path);
     }
+    let failure: { file: string; reason: string } | undefined;
+    for (const path of paths) {
+      const reason = await differenceFromBranch(repoDir, relative(repoDir, path), issue.branch);
+      if (reason) {
+        failure = { file: relative(repoDir, path), reason };
+        break;
+      }
+    }
+    const edits: DiscardedEdit[] = [];
+    try {
+      for (const path of failure ? [] : paths) {
+        const edit: DiscardedEdit = {
+          path,
+          file: relative(repoDir, path),
+          content: await readFile(path),
+          indexEntry: await git(repoDir, "ls-files", "-s", "--", relative(repoDir, path)),
+        };
+        edits.push(edit);
+        await git(repoDir, "checkout", "HEAD", "--", edit.file);
+      }
+    } catch (error) {
+      for (const edit of edits) await restoreEdit(repoDir, edit);
+      failure = { file, reason: `could not discard its local edit: ${errorMessage(error)}` };
+    }
+    if (failure) {
+      warn(issue, failure.file, failure.reason);
+      continue;
+    }
+    discarded.push(...edits);
+    pulled.push(issue);
   }
-  if (discarded.length === 0) return [];
+  if (pulled.length === 0) return [];
   try {
     await git(repoDir, "pull", "-q", "--ff-only", "origin", targetBranch);
   } catch (error) {
-    for (const edit of discarded) {
-      await restoreEdit(repoDir, edit);
-      warn(edit.issue, edit.file, `\`git pull --ff-only origin ${targetBranch}\` failed: ${gitErrorMessage(error)}`);
+    for (const edit of discarded) await restoreEdit(repoDir, edit);
+    for (const issue of pulled) {
+      warn(issue, relative(repoDir, issue.path), `\`git pull --ff-only origin ${targetBranch}\` failed: ${gitErrorMessage(error)}`);
     }
     return [];
   }
-  return discarded.map((edit) => edit.issue);
+  return pulled;
+}
+
+/** The files of the Issues `issue` is stacked on, following each `Stacked on:` line down the chain. */
+async function blockerPaths(issue: Issue, { store }: IssueContext): Promise<string[]> {
+  const paths: string[] = [];
+  const seen = new Set([issue.path]);
+  for (let branch = issue.stackedOn; branch; ) {
+    const blocker = await store.byBranch(branch);
+    if (!blocker || seen.has(blocker.path)) break;
+    seen.add(blocker.path);
+    paths.push(blocker.path);
+    branch = blocker.stackedOn;
+  }
+  return paths;
 }
 
 /** Why the working copy's `file` is not the one at the tip of `branch`, or undefined when it is. */
@@ -295,8 +335,8 @@ async function differenceFromBranch(repoDir: string, file: string, branch: strin
   return local === atTip ? undefined : `it differs from the file at the tip of ${branch}.`;
 }
 
-async function restoreEdit(repoDir: string, { issue, content, indexEntry, file }: DiscardedEdit): Promise<void> {
-  await writeFile(issue.path, content);
+async function restoreEdit(repoDir: string, { path, content, indexEntry, file }: DiscardedEdit): Promise<void> {
+  await writeFile(path, content);
   const entry = /^(\d+) ([0-9a-f]+) \d+\t/.exec(indexEntry);
   if (entry) await git(repoDir, "update-index", "--cacheinfo", `${entry[1]},${entry[2]},${file}`);
 }

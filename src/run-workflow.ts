@@ -113,7 +113,12 @@ async function runIssues(issues: IssueResult[], count: number, context: IssueCon
     const issue = await store.next();
     if (!issue) {
       const progress = issues.length === 0 ? "Nothing to do." : `Processed ${issues.length} of ${count}.`;
-      const blocked = (await store.blocked()).map((b) => `Issue ${b.id} is blocked by ${b.blockers.join(", ")}.`);
+      const blocked = (await store.blocked()).map((b) => {
+        const line = `Issue ${b.id} is blocked by ${b.blockers.join(", ")}.`;
+        return b.tooManyToStack
+          ? `${line} It has ${b.blockers.length} unmerged blockers, and a Stacked Issue can have only one.`
+          : line;
+      });
       log([`No Issue is ready for an agent. ${progress}`, ...blocked].join("\n"));
       break;
     }

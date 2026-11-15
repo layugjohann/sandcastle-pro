@@ -69,6 +69,11 @@ export interface BlockedIssue {
   id: string;
   /** Its `Blocked by:` entries that are not `done`, as written in the Issue. */
   blockers: string[];
+  /**
+   * Set when stacking is on and the Issue has two or more unmerged blockers, so it can't stack even if every one of
+   * them is `awaiting-merge`: a Stacked Issue builds on exactly one blocker's branch.
+   */
+  tooManyToStack?: true;
 }
 
 export interface IssueStore {
@@ -77,7 +82,10 @@ export interface IssueStore {
    * `ready-for-agent` one, else null. With stacking on, a sole `awaiting-merge` blocker does not block.
    */
   next(): Promise<Issue | null>;
-  /** The `ready-for-agent` Issues that `next()` skips, each with its blockers that are not `done`. */
+  /**
+   * The `ready-for-agent` Issues that `next()` skips, each with its blockers that are not `done`, and with
+   * `tooManyToStack` when stacking is on and two or more of those blockers are unmerged.
+   */
   blocked(): Promise<BlockedIssue[]>;
   /** Every Issue in `awaiting-merge`, whose branch the human may have merged. */
   awaitingMerge(): Promise<Issue[]>;
@@ -300,7 +308,10 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
       const files = await readIssues();
       return files
         .filter((f) => f.status === "ready-for-agent" && !readiness(f, files, stack).ready)
-        .map((f) => ({ id: f.id, blockers: unfinishedBlockers(f, files) }))
+        .map((f): BlockedIssue => {
+          const blockers = unfinishedBlockers(f, files);
+          return stack && blockers.length > 1 ? { id: f.id, blockers, tooManyToStack: true } : { id: f.id, blockers };
+        })
         .filter((b) => b.blockers.length > 0);
     },
 

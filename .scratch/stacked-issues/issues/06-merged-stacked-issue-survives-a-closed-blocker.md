@@ -1,6 +1,7 @@
 # 06: A merged Stacked Issue is done even when its blocker was closed
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/28
 Blocked by: None
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 11, 13). Review Finding from Issue 04.
@@ -32,3 +33,5 @@ Usage: Implementer 48 input, 20,671 output, 55,377 cache creation, 1,099,960 cac
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-06-2026-11-15T18-57-01-279Z.log`).
 
 Usage: Body writer 2 input, 1,326 output, 25,601 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/28

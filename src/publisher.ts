@@ -22,13 +22,20 @@ export interface PullRequestRequest {
 /** As `gh pr view --json state` reports it. */
 export type PullRequestState = "OPEN" | "CLOSED" | "MERGED";
 
+/** A Pull Request's state and the branch it merges (or was merged) into, as `gh pr view --json state,baseRefName` reports them. */
+export interface PullRequestStatus {
+  state: PullRequestState;
+  /** The Pull Request's base branch. GitHub retargets it when its old base branch is deleted on merge. */
+  base: string;
+}
+
 export interface Publisher {
   /** Pushes `branch` and opens a ready (not draft) Pull Request. Returns its URL; throws when either step fails. */
   publish(request: PullRequestRequest): Promise<{ url: string }>;
   /** Pushes `branch` to `origin` again, after the host committed more onto it. Throws when the push fails. */
   push(branch: string): Promise<void>;
-  /** The Pull Request's state on GitHub. Throws when it can't be read. */
-  state(url: string): Promise<PullRequestState>;
+  /** The Pull Request's state and base branch on GitHub. Throws when they can't be read. */
+  state(url: string): Promise<PullRequestStatus>;
 }
 
 /** The production Publisher: `git push -u origin <branch>`, then `gh pr create` with the body in a file. */
@@ -59,12 +66,15 @@ export function createGitHubPublisher(repoDir: string): Publisher {
     },
 
     async state(url) {
-      const stdout = await run("gh", ["pr", "view", url, "--json", "state"], repoDir);
-      const state = (JSON.parse(stdout) as { state?: unknown }).state;
+      const stdout = await run("gh", ["pr", "view", url, "--json", "state,baseRefName"], repoDir);
+      const { state, baseRefName } = JSON.parse(stdout) as { state?: unknown; baseRefName?: unknown };
       if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED") {
         throw new Error(`gh pr view reported an unknown state: ${stdout.trim()}`);
       }
-      return state;
+      if (typeof baseRefName !== "string" || baseRefName === "") {
+        throw new Error(`gh pr view reported no base branch: ${stdout.trim()}`);
+      }
+      return { state, base: baseRefName };
     },
   };
 }

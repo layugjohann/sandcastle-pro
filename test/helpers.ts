@@ -11,6 +11,7 @@ import {
   type AgentResult,
   type Config,
   type Publisher,
+  type PullRequestStatus,
   type PullRequestRequest,
   type PullRequestState,
   type Review,
@@ -200,10 +201,16 @@ export interface FakePublisher extends Publisher {
 /**
  * A scripted Publisher that never calls `gh`, and pushes for real only when `pushFrom` names a repo with an `origin`.
  * Each published Pull Request gets the next number; `fail` makes publishing throw, and `failPush` makes `push` throw.
- * `states` maps a URL to the state GitHub reports; a URL not in it makes the lookup throw.
+ * `states` maps a URL to the state GitHub reports, with the base branch `main` unless a status names another; a URL
+ * not in it makes the lookup throw.
  */
 export function fakePublisher(
-  opts: { fail?: string; failPush?: string; pushFrom?: string; states?: Record<string, PullRequestState> } = {},
+  opts: {
+    fail?: string;
+    failPush?: string;
+    pushFrom?: string;
+    states?: Record<string, PullRequestState | PullRequestStatus>;
+  } = {},
 ): FakePublisher {
   const published: PullRequestRequest[] = [];
   const pushes: string[] = [];
@@ -230,7 +237,7 @@ export function fakePublisher(
       stateLookups.push(url);
       const state = opts.states?.[url];
       if (!state) throw new Error(`gh: could not resolve ${url}`);
-      return state;
+      return typeof state === "string" ? { state, base: "main" } : state;
     },
   };
 }

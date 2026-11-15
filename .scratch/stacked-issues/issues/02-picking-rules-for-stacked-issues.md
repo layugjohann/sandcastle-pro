@@ -1,6 +1,6 @@
 # 02: Picking rules for Stacked Issues
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/24
 Blocked by: 01
 

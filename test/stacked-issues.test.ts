@@ -121,7 +121,7 @@ describe("Stacked Issues", () => {
   });
 
   const BLOCKER_LINE =
-    "> **Stacked on Issue 01**: this Pull Request targets its Pull Request https://github.com/owner/repo/pull/1. Merge that Pull Request first.";
+    "> **Stacked on Issue 01**: this Pull Request targets `issue/01-first`, the branch of https://github.com/owner/repo/pull/1. Merge that Pull Request first.";
 
   it("starts a Stacked Issue's plain body with the blocker line, and leaves a non-stacked body without it", async () => {
     const publisher = fakePublisher({ pushFrom: repo.dir });
@@ -134,9 +134,31 @@ describe("Stacked Issues", () => {
     expect(second!.body.startsWith(`${BLOCKER_LINE}\n\n> **Note:**`)).toBe(true);
     const comments = repo.read(B).split(/^## Comments$/m)[1]!;
     expect(comments).toContain(
-      "**Pull Request opened**: https://github.com/owner/repo/pull/2\n\nStacked on Issue 01 (`issue/01-first`, https://github.com/owner/repo/pull/1): merge it first.",
+      "**Pull Request opened**: https://github.com/owner/repo/pull/2\n\nStacked on Issue 01: this Pull Request targets `issue/01-first`, the branch of https://github.com/owner/repo/pull/1. Merge that Pull Request first.",
     );
     expect(repo.read(A).split(/^## Comments$/m)[1]).not.toContain("Stacked on");
+  });
+
+  it("names the blocker's branch, and no Pull Request, when the blocker has no Pull Request recorded", async () => {
+    // 01 passed the Gate without a Pull Request: its branch exists, its file has no Pull Request line.
+    git(repo.dir, "checkout", "-q", "-b", "issue/01-first");
+    repo.write("a.txt", "A-MARKER\n");
+    repo.commitAll("01's work");
+    git(repo.dir, "checkout", "-q", "main");
+    repo.write(A, issueFile({ title: "01: First slice", status: "awaiting-merge" }));
+    repo.commitAll("01 awaits merge");
+    git(repo.dir, "push", "-q", "origin", "main");
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    await runWorkflow({ repoDir: repo.dir, agent: chainAgent(repo.dir), publisher, config: config(true), log });
+
+    const line = "Stacked on Issue 01: this Pull Request targets `issue/01-first`. Merge `issue/01-first` into `main` first.";
+    expect(publisher.published.map((p) => p.base)).toEqual(["issue/01-first"]);
+    const body = publisher.published[0]!.body;
+    expect(body.startsWith("> **Stacked on Issue 01**: this Pull Request targets `issue/01-first`. Merge `issue/01-first` into `main` first.")).toBe(true);
+    expect(body).not.toContain("the branch of");
+    const comments = repo.read(B).split(/^## Comments$/m)[1]!;
+    expect(comments).toContain(`**Pull Request opened**: https://github.com/owner/repo/pull/1\n\n${line}`);
   });
 
   it("starts a Stacked Issue's written body with the blocker line, and leaves a non-stacked body as written", async () => {
@@ -513,6 +535,45 @@ describe("Detecting merges of Stacked Issues", () => {
     expect(statusOf(B)).toBe("awaiting-merge");
     expect(output.join("\n")).toContain(
       `Warning: Issue 02's Pull Request ${PR_B} was merged into issue/01-first, not the target branch main, so it stays awaiting-merge. Merge its blocker first`,
+    );
+  });
+
+  it("sends a Stacked Issue to ready-for-human when its blocker was closed and its own Pull Request's state can't be read", async () => {
+    // PR_B is not in `states`, so reading it throws.
+    const publisher = fakePublisher({ states: { [PR_A]: { state: "CLOSED", base: "main" } } });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(B)).toBe("ready-for-human");
+    expect(commentsOf(B).match(/Blocker closed/g)).toHaveLength(1);
+    expect(commentsOf(B)).toContain(`the branch of Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
+    expect(statusOf(A)).toBe("awaiting-merge");
+    const text = output.join("\n");
+    expect(text).toContain(`Warning: could not read the state of Issue 02's Pull Request ${PR_B}, so it stays awaiting-merge: gh: could not resolve ${PR_B}`);
+    expect(text).toContain(`Issue 02 is ready-for-human: it is stacked on Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
+  });
+
+  it("names the blocker's file in the warning when discarding that file's local edit fails", async () => {
+    // The human merged 02, which holds 01's work, into main; 01's own Pull Request is still open.
+    mergeOnOrigin(origin, "main", "issue/02-second");
+    // 01's working copy matches the file on 02's branch, but is not in HEAD, so `git checkout HEAD --` fails on it.
+    const atTip = git(repo.dir, "show", `issue/02-second:${A}`);
+    git(repo.dir, "rm", "-q", "--cached", A);
+    git(repo.dir, "commit", "-q", "-m", "untrack 01");
+    repo.write(A, `${atTip}\n`);
+    expect(git(repo.dir, "hash-object", A)).toBe(git(repo.dir, "rev-parse", `issue/02-second:${A}`));
+    const before = repo.read(B);
+    const publisher = fakePublisher({
+      states: { [PR_A]: { state: "OPEN", base: "main" }, [PR_B]: { state: "MERGED", base: "main" } },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(B)).toBe("awaiting-merge");
+    expect(repo.read(B)).toBe(before);
+    expect(repo.read(A)).toBe(`${atTip}\n`);
+    expect(output.join("\n")).toContain(
+      `Warning: Issue 02's Pull Request ${PR_B} is merged, but ${A} was left as it is and the Issue stays awaiting-merge: could not discard its local edit`,
     );
   });
 

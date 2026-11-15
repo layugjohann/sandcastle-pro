@@ -157,13 +157,13 @@ describe("Issue Store", () => {
       expect((await store.awaitingMerge())[0]?.status).toBe("awaiting-merge");
     });
 
-    it("pause() keeps a bold Status bold, adds a plain pause record, and next() reads it back", async () => {
+    it("pause() keeps a bold Status bold, adds a bold pause record, and next() reads it back", async () => {
       repo.write(`${ISSUES}/01-a.md`, "# 01: A\n\n**Status:** ready-for-agent\n");
       const store = createIssueStore(repo.dir);
 
       await store.pause((await store.next())!, { sessionId: "sess-1", stage: "implementer" });
 
-      expect(repo.read(`${ISSUES}/01-a.md`)).toMatch(/^\*\*Status:\*\* paused\nPaused session: sess-1\nPaused stage: Implementer$/m);
+      expect(repo.read(`${ISSUES}/01-a.md`)).toMatch(/^\*\*Status:\*\* paused\n\*\*Paused session:\*\* sess-1\n\*\*Paused stage:\*\* Implementer$/m);
       expect((await store.next())?.paused).toEqual({ sessionId: "sess-1", stage: "implementer" });
     });
 
@@ -185,6 +185,28 @@ describe("Issue Store", () => {
       await store.transition((await store.next())!, "in-progress");
 
       expect(repo.read(`${ISSUES}/01-a.md`)).not.toMatch(/Paused/);
+    });
+
+    it("adds a Pull Request line in bold under a bold Status line, and a plain one under a plain Status line", async () => {
+      repo.write(`${ISSUES}/01-a.md`, "# 01: A\n\n**Status:** awaiting-merge\n");
+      repo.write(`${ISSUES}/02-b.md`, "# 02: B\n\nStatus: awaiting-merge\n");
+      const store = createIssueStore(repo.dir);
+      const [a, b] = await store.awaitingMerge();
+
+      await store.recordPullRequest(a!, "https://github.com/o/r/pull/1");
+      await store.recordPullRequest(b!, "https://github.com/o/r/pull/2");
+
+      expect(repo.read(`${ISSUES}/01-a.md`)).toMatch(/^\*\*Status:\*\* awaiting-merge\n\*\*Pull Request:\*\* https:\/\/github\.com\/o\/r\/pull\/1$/m);
+      expect(repo.read(`${ISSUES}/02-b.md`)).toMatch(/^Status: awaiting-merge\nPull Request: https:\/\/github\.com\/o\/r\/pull\/2$/m);
+    });
+
+    it("pause() keeps a plain pause record plain under a bold Status line", async () => {
+      repo.write(`${ISSUES}/01-a.md`, "# 01: A\n\n**Status:** paused\nPaused session: sess-1\nPaused stage: Implementer\n");
+      const store = createIssueStore(repo.dir);
+
+      await store.pause((await store.next())!, { sessionId: "sess-2", stage: "implementer" });
+
+      expect(repo.read(`${ISSUES}/01-a.md`)).toMatch(/^\*\*Status:\*\* paused\nPaused session: sess-2\nPaused stage: Implementer$/m);
     });
 
     it("reads a bold Pull Request line and keeps it bold when replacing it", async () => {

@@ -24,13 +24,26 @@ export interface StackedOnBlocker {
   branch: string;
   /** The blocker's Pull Request URL, or undefined when it has none recorded. */
   pullRequest: string | undefined;
+  /** The Run's target branch, which the blocker must reach first. */
+  targetBranch: string;
+}
+
+/**
+ * The sentence naming the blocker a Stacked Issue's Pull Request is stacked on, used by the Pull Request body and the
+ * Issue's "Pull Request opened" comment alike. With `bold`, its "Stacked on" lead is bold.
+ */
+export function stackedOnText({ id, branch, pullRequest, targetBranch }: StackedOnBlocker, bold = false): string {
+  const lead = `Stacked on ${id === undefined ? `\`${branch}\`` : `Issue ${id}`}`;
+  const detail =
+    pullRequest === undefined
+      ? `this Pull Request targets \`${branch}\`. Merge \`${branch}\` into \`${targetBranch}\` first.`
+      : `this Pull Request targets \`${branch}\`, the branch of ${pullRequest}. Merge that Pull Request first.`;
+  return `${bold ? `**${lead}**` : lead}: ${detail}`;
 }
 
 /** The line a Stacked Issue's body starts with, so the human merges the chain in order. */
-export function stackedOnLine({ id, branch, pullRequest }: StackedOnBlocker): string {
-  const issue = id === undefined ? `\`${branch}\`` : `Issue ${id}`;
-  const pr = pullRequest === undefined ? `its branch \`${branch}\`` : `its Pull Request ${pullRequest}`;
-  return `> **Stacked on ${issue}**: this Pull Request targets ${pr}. Merge that Pull Request first.`;
+export function stackedOnLine(blocker: StackedOnBlocker): string {
+  return `> ${stackedOnText(blocker, true)}`;
 }
 
 /**

@@ -1,6 +1,6 @@
 # 01: Stack a two-Issue chain in one Run
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: None
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 1, 5, 6, 8, 9, 14, 15), ADR `docs/adr/0004-blocked-issues-stack-on-unmerged-blockers.md`
@@ -21,3 +21,15 @@ Spec: `.scratch/stacked-issues/spec.md` (stories 1, 5, 6, 8, 9, 14, 15), ADR `do
 ## Comments
 
 **Implementer note:** The Issue parser has no bold-style header lines today (`Status:` and `Blocked by:` are only read in plain style). `Stacked on:` is read in either style, and it is written in bold when the file's `Status:` or `Blocked by:` line is bold. It goes under `Blocked by:`, else under `Status:`, else under the title, and never below `## Comments`. When the Run publishes a Stacked Issue, the Issue file is merged against the blocker branch's copy, and the `Stacked on:` line goes onto the branch along with `Status:` and `Pull Request:`. Merge detection for Stacked Issues is unchanged; later Issues cover it.
+
+Usage: Implementer 50 input, 20,666 output, 110,755 cache creation, 1,362,597 cache read; Review Session 10 input, 3,865 output, 36,400 cache creation, 186,122 cache read.
+
+**Review Session: Non-critical Findings**
+
+- When a Stacked Issue fails and goes back to ready-for-agent, its `Stacked on:` line stays in the file. If the blocker is merged before the next Run, the Issue restarts on the old blocker branch and its Pull Request targets a branch that may be deleted, because `baseOf` prefers the recorded `stackedOn` over a fresh pick. Consider removing the line when the Issue goes back to ready-for-agent, or checking it again when the Issue is picked.
+- `Issue.stackOn` (picked by `next()`, not yet recorded) and `Issue.stackedOn` (read from the `Stacked on:` line) are near-identical names for different things. A name like `stackCandidate` would make the difference clear.
+- The doc comments in src/prompt.ts (lines 26-28 and 131-133) still say `commits`/`diff` are measured since/against the target branch. They now come from the Issue's base (the blocker's branch for a Stacked Issue).
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-01-2026-11-15T17-13-13-680Z.log`).
+
+Usage: Body writer 2 input, 1,584 output, 31,000 cache creation, 11,370 cache read.

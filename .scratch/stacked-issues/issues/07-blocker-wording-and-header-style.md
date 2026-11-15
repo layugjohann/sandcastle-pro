@@ -1,6 +1,6 @@
 # 07: Clearer blocker wording, and one rule for the bold style
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: None
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 10, 13). Review Findings from Issues 05 and 06, plus a docs mismatch found while resolving PR #23 (Issue 01).
@@ -17,3 +17,14 @@ Spec: `.scratch/stacked-issues/spec.md` (stories 10, 13). Review Findings from I
 - [x] A test covers the warning above: a blocker file whose discard fails is the file the warning names.
 
 ## Comments
+
+Usage: Implementer 54 input, 14,817 output, 78,683 cache creation, 1,256,195 cache read; Review Session 10 input, 2,367 output, 25,201 cache creation, 150,739 cache read.
+
+**Review Session: Non-critical Findings**
+
+- When the blocker is not a known Issue (id undefined), stackedOnText names the branch three times: "Stacked on `issue/x`: this Pull Request targets `issue/x`. Merge `issue/x` into `main` first." It is correct but repetitive; the lead could be shortened in that case.
+- test/stacked-issues.test.ts: the new no-URL test writes out the expected blocker sentence twice, once as `line` for the comment check and again inline for the body check. The body check could reuse `line` (as "> **Stacked on Issue 01**:" plus the rest).
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-07-2026-11-15T19-09-38-813Z.log`).
+
+Usage: Body writer 2 input, 1,343 output, 23,959 cache creation, 11,370 cache read.

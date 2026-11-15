@@ -1,6 +1,6 @@
 # 06: A merged Stacked Issue is done even when its blocker was closed
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/28
 Blocked by: None
 

@@ -103,6 +103,39 @@ describe("Stacked Issues", () => {
     expect(git(repo.dir, "branch", "--list", "issue/02-second")).toBe("");
     expect(output.join("\n")).toContain("Issue 02 is blocked by 01.");
   });
+
+  const BLOCKER_LINE =
+    "> **Stacked on Issue 01**: this Pull Request targets its Pull Request https://github.com/owner/repo/pull/1. Merge that Pull Request first.";
+
+  it("starts a Stacked Issue's plain body with the blocker line, and leaves a non-stacked body without it", async () => {
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    await runWorkflow({ repoDir: repo.dir, agent: chainAgent(repo.dir), publisher, config: config(true), count: 2, log });
+
+    const [first, second] = publisher.published;
+    expect(first!.body).not.toContain("Stacked on");
+    expect(first!.body.startsWith("> **Note:**")).toBe(true);
+    expect(second!.body.startsWith(`${BLOCKER_LINE}\n\n> **Note:**`)).toBe(true);
+    const comments = repo.read(B).split(/^## Comments$/m)[1]!;
+    expect(comments).toContain(
+      "**Pull Request opened**: https://github.com/owner/repo/pull/2\n\nStacked on Issue 01 (`issue/01-first`, https://github.com/owner/repo/pull/1): merge it first.",
+    );
+    expect(repo.read(A).split(/^## Comments$/m)[1]).not.toContain("Stacked on");
+  });
+
+  it("starts a Stacked Issue's written body with the blocker line, and leaves a non-stacked body as written", async () => {
+    const writerA = fakeAgent(repo.dir, { files: { "a.txt": "A\n" }, body: "## Summary\n\nDid it." });
+    const writerB = fakeAgent(repo.dir, { files: { "b.txt": "B\n" }, body: "## Summary\n\nDid it." });
+    const agent: FakeAgent = { calls: [], run: (call) => (call.branch === "issue/01-first" ? writerA : writerB).run(call) };
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    await runWorkflow({ repoDir: repo.dir, agent, publisher, config: config(true), count: 2, log });
+
+    const [first, second] = publisher.published;
+    expect(first!.body.startsWith("## Summary\n\nDid it.")).toBe(true);
+    expect(first!.body).not.toContain("Stacked on");
+    expect(second!.body.startsWith(`${BLOCKER_LINE}\n\n## Summary\n\nDid it.`)).toBe(true);
+  });
 });
 
 describe("Picking rules for Stacked Issues at the runWorkflow seam", () => {

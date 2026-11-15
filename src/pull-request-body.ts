@@ -13,24 +13,47 @@ export interface PullRequestBodyInput {
   gateOutput: string;
   findings: readonly Finding[];
   usage: IssueUsage;
+  /** The blocker a Stacked Issue is built on; undefined for an Issue based on the target branch. */
+  stackedOn?: StackedOnBlocker;
+}
+
+/** The blocker a Stacked Issue's Pull Request is stacked on, named at the top of its body. */
+export interface StackedOnBlocker {
+  /** The blocker Issue's id, or undefined when no Issue file has the branch. */
+  id: string | undefined;
+  branch: string;
+  /** The blocker's Pull Request URL, or undefined when it has none recorded. */
+  pullRequest: string | undefined;
+}
+
+/** The line a Stacked Issue's body starts with, so the human merges the chain in order. */
+export function stackedOnLine({ id, branch, pullRequest }: StackedOnBlocker): string {
+  const issue = id === undefined ? `\`${branch}\`` : `Issue ${id}`;
+  const pr = pullRequest === undefined ? `its branch \`${branch}\`` : `its Pull Request ${pullRequest}`;
+  return `> **Stacked on ${issue}**: this Pull Request targets ${pr}. Merge that Pull Request first.`;
 }
 
 /**
- * The deterministic Pull Request body: Evidence (the passing Gate output), then the host's sections. It is the
+ * The deterministic Pull Request body: for a Stacked Issue, a line naming its blocker; then Evidence (the passing Gate output), then the host's sections. It is the
  * fallback when the body writer wrote nothing; `note` then says why, at the top. Empty sections are left out.
  */
-export function buildPullRequestBody({ gateOutput, findings, usage }: PullRequestBodyInput, note?: string): string {
+export function buildPullRequestBody({ gateOutput, findings, usage, stackedOn }: PullRequestBodyInput, note?: string): string {
   const evidence = gateOutput.trim();
   return join([
+    stackedOn === undefined ? undefined : stackedOnLine(stackedOn),
     note === undefined ? undefined : `> **Note:** ${note}`,
     evidence ? `## Evidence\n\nThe Gate passed.\n\n${fenced(truncateStart(evidence, MAX_EVIDENCE_CHARS))}` : undefined,
     ...hostSections(findings, usage),
   ]);
 }
 
-/** The body writer's Summary, Evidence and Merge Danger, followed by the host's sections. */
-export function buildWrittenPullRequestBody(written: string, { findings, usage }: PullRequestBodyInput): string {
-  return join([truncateEnd(written.trim(), MAX_WRITTEN_CHARS), ...hostSections(findings, usage)]);
+/** For a Stacked Issue, a line naming its blocker; then the body writer's Summary, Evidence and Merge Danger, followed by the host's sections. */
+export function buildWrittenPullRequestBody(written: string, { findings, usage, stackedOn }: PullRequestBodyInput): string {
+  return join([
+    stackedOn === undefined ? undefined : stackedOnLine(stackedOn),
+    truncateEnd(written.trim(), MAX_WRITTEN_CHARS),
+    ...hostSections(findings, usage),
+  ]);
 }
 
 /**

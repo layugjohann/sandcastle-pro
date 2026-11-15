@@ -1,6 +1,7 @@
 # 02: Picking rules for Stacked Issues
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/24
 Blocked by: 01
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 2, 3, 4)
@@ -25,3 +26,5 @@ Usage: Implementer 16 input, 5,832 output, 35,059 cache creation, 265,873 cache 
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-02-2026-11-15T17-55-14-126Z.log`).
 
 Usage: Body writer 2 input, 1,246 output, 17,408 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/24

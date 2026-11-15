@@ -297,3 +297,102 @@ describe("Picking Stacked Issues", () => {
     expect(repo.read(`${ISSUES}/03-bold.md`)).toMatch(/^\*\*Blocked by:\*\* 01\n\*\*Stacked on:\*\* issue\/01-first$/m);
   });
 });
+
+describe("Resuming a paused Stacked Issue", () => {
+  let repo: TempRepo;
+  let origin: string;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const statusOf = (file: string) => /^Status:\s*(\S+)/m.exec(repo.read(file))?.[1];
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    output = [];
+    origin = mkdtempSync(join(tmpdir(), "sandcastle-pro-origin-"));
+    git(origin, "init", "-q", "--bare", "-b", "main");
+    git(repo.dir, "remote", "add", "origin", origin);
+    repo.write(".scratch/feature/spec.md", "# Spec: feature\n\nSpec body.\n");
+    repo.write(A, issueFile({ title: "01: First slice", status: "ready-for-agent" }));
+    repo.write(B, issueFile({ title: "02: Second slice", status: "ready-for-agent", extra: "Blocked by: 01\n\nBuild on the first." }));
+    repo.commitAll("add issues");
+    git(repo.dir, "push", "-q", "-u", "origin", "main");
+  });
+  afterEach(() => {
+    repo.cleanup();
+    rmSync(origin, { recursive: true, force: true });
+  });
+
+  /** Runs 01 to awaiting-merge, then pauses 02, stacked on 01, at the usage limit in the Review Session. */
+  async function pauseSecondInReviewSession(): Promise<void> {
+    const first = fakeAgent(repo.dir, { files: { "a.txt": "A-MARKER\n" } });
+    const second = fakeAgent(repo.dir, { files: { "b.txt": "B-MARKER\n" }, limit: { stage: "review-session", sessionId: "s-review" } });
+    const agent: FakeAgent = { calls: [], run: (call) => (call.branch === "issue/01-first" ? first : second).run(call) };
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher({ pushFrom: repo.dir }), config: config(true), count: 2, log });
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["01", "awaiting-merge"],
+      ["02", "paused"],
+    ]);
+    expect(repo.read(B)).toMatch(/^Stacked on: issue\/01-first$/m);
+    output = [];
+  }
+
+  it("resumes a Stacked Issue paused in the Review Session on its recorded base", async () => {
+    await pauseSecondInReviewSession();
+    const agent = fakeAgent(repo.dir, { files: { "b.txt": "B-MARKER\n" } });
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: config(true), count: 1, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["02", "awaiting-merge"]]);
+    const review = agent.calls.find((c) => c.stage === "review-session")!;
+    expect(review.resumeSession).toBe("s-review");
+    expect(agent.calls.some((c) => c.stage === "implementer")).toBe(false);
+    // The body writer sees the diff measured from the blocker's branch, without the blocker's work.
+    const bodyWriter = agent.calls.find((c) => c.stage === "body-writer")!;
+    expect(bodyWriter.prompt).toContain("+B-MARKER");
+    expect(bodyWriter.prompt).not.toContain("A-MARKER");
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([["issue/02-second", "issue/01-first"]]);
+    expect(output.join("\n")).toContain("Resuming Issue 02 in the Review Session on issue/02-second stacked on issue/01-first");
+  });
+
+  it("keeps the recorded base when the blocker was merged into the target branch while paused", async () => {
+    await pauseSecondInReviewSession();
+    repo.commitAll("record the first Run");
+    git(repo.dir, "merge", "-q", "--no-ff", "-m", "Merge Issue 01", "issue/01-first");
+    repo.write(A, repo.read(A).replace(/^Status: .*$/m, "Status: done"));
+    repo.commitAll("Mark Issue 01 as done");
+    const agent = fakeAgent(repo.dir);
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: config(true), count: 1, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["02", "awaiting-merge"]]);
+    expect(agent.calls.find((c) => c.stage === "review-session")?.resumeSession).toBe("s-review");
+    // GitHub retargets the Pull Request once the blocker's branch is deleted; the Run does not.
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([["issue/02-second", "issue/01-first"]]);
+    expect(repo.read(B)).toMatch(/^Stacked on: issue\/01-first$/m);
+  });
+
+  it("sends a Stacked Issue to ready-for-human when its Stacked on branch no longer exists locally", async () => {
+    await pauseSecondInReviewSession();
+    repo.commitAll("record the first Run");
+    git(repo.dir, "merge", "-q", "--no-ff", "-m", "Merge Issue 01", "issue/01-first");
+    repo.write(A, repo.read(A).replace(/^Status: .*$/m, "Status: done"));
+    repo.commitAll("Mark Issue 01 as done");
+    git(repo.dir, "branch", "-D", "issue/01-first");
+    const before = git(repo.dir, "rev-parse", "issue/02-second");
+    const agent = fakeAgent(repo.dir);
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: config(true), count: 1, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["02", "base-missing"]]);
+    expect(agent.calls).toHaveLength(0);
+    expect(publisher.published).toHaveLength(0);
+    expect(statusOf(B)).toBe("ready-for-human");
+    expect(repo.read(B)).toMatch(/^Stacked on: issue\/01-first$/m);
+    expect(repo.read(B).split(/^## Comments$/m)[1]).toContain("`issue/01-first`, which no longer exists locally");
+    expect(git(repo.dir, "rev-parse", "issue/02-second")).toBe(before);
+    expect(output.join("\n")).toContain("Issue 02 is stacked on issue/01-first, which no longer exists locally, so it goes to ready-for-human.");
+  });
+});

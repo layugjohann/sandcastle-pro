@@ -1,6 +1,7 @@
 # 07: Clearer blocker wording, and one rule for the bold style
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/29
 Blocked by: None
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 10, 13). Review Findings from Issues 05 and 06, plus a docs mismatch found while resolving PR #23 (Issue 01).
@@ -28,3 +29,5 @@ Usage: Implementer 54 input, 14,817 output, 78,683 cache creation, 1,256,195 cac
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-07-2026-11-15T19-09-38-813Z.log`).
 
 Usage: Body writer 2 input, 1,343 output, 23,959 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/29

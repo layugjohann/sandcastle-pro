@@ -1,6 +1,7 @@
 # 01: Stack a two-Issue chain in one Run
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/23
 Blocked by: None
 
 Spec: `.scratch/stacked-issues/spec.md` (stories 1, 5, 6, 8, 9, 14, 15), ADR `docs/adr/0004-blocked-issues-stack-on-unmerged-blockers.md`
@@ -33,3 +34,5 @@ Usage: Implementer 50 input, 20,666 output, 110,755 cache creation, 1,362,597 ca
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-01-2026-11-15T17-13-13-680Z.log`).
 
 Usage: Body writer 2 input, 1,584 output, 31,000 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/23

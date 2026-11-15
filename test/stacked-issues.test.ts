@@ -105,6 +105,123 @@ describe("Stacked Issues", () => {
   });
 });
 
+describe("Picking rules for Stacked Issues at the runWorkflow seam", () => {
+  let repo: TempRepo;
+  let origin: string;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const statusOf = (file: string) => /^Status:\s*(\S+)/m.exec(repo.read(`${ISSUES}/${file}.md`))?.[1];
+  const write = (file: string, status: string, blockedBy?: string) =>
+    repo.write(`${ISSUES}/${file}.md`, issueFile({ title: file, status, extra: blockedBy ? `Blocked by: ${blockedBy}\n\nDo it.` : "Do it." }));
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    output = [];
+    origin = mkdtempSync(join(tmpdir(), "sandcastle-pro-origin-"));
+    git(origin, "init", "-q", "--bare", "-b", "main");
+    git(repo.dir, "remote", "add", "origin", origin);
+    repo.write(".scratch/feature/spec.md", "# Spec: feature\n\nSpec body.\n");
+  });
+  afterEach(() => {
+    repo.cleanup();
+    rmSync(origin, { recursive: true, force: true });
+  });
+
+  function commitAndPush(): void {
+    repo.commitAll("add issues");
+    git(repo.dir, "push", "-q", "-u", "origin", "main");
+  }
+
+  it("skips an Issue with two awaiting-merge blockers, naming both and saying a Stacked Issue can have only one", async () => {
+    write("01-first", "awaiting-merge");
+    write("02-second", "awaiting-merge");
+    write("03-third", "ready-for-agent", "01, 02");
+    commitAndPush();
+    const agent = fakeAgent(repo.dir);
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher(), config: config(true), count: 3, log });
+
+    expect(result.issues).toEqual([]);
+    expect(agent.calls).toHaveLength(0);
+    expect(statusOf("03-third")).toBe("ready-for-agent");
+    expect(repo.read(`${ISSUES}/03-third.md`)).not.toContain("Stacked on:");
+    expect(output.join("\n")).toContain(
+      "Issue 03 is blocked by 01, 02. It has 2 unmerged blockers, and a Stacked Issue can have only one.",
+    );
+  });
+
+  it("does not stack on a blocker in ready-for-human", async () => {
+    write("01-first", "ready-for-human");
+    write("02-second", "ready-for-agent", "01");
+    commitAndPush();
+    const agent = fakeAgent(repo.dir);
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher(), config: config(true), count: 2, log });
+
+    expect(result.issues).toEqual([]);
+    expect(agent.calls).toHaveLength(0);
+    expect(statusOf("02-second")).toBe("ready-for-agent");
+    const printed = output.join("\n");
+    expect(printed).toContain("Issue 02 is blocked by 01.");
+    expect(printed).not.toContain("can have only one");
+  });
+
+  it("builds a three-Issue chain in one Run, each stacked on the one before", async () => {
+    write("01-first", "ready-for-agent");
+    write("02-second", "ready-for-agent", "01");
+    write("03-third", "ready-for-agent", "02");
+    commitAndPush();
+    const markers: Record<string, string> = { "issue/01-first": "a.txt", "issue/02-second": "b.txt", "issue/03-third": "c.txt" };
+    const agents = Object.fromEntries(
+      Object.entries(markers).map(([branch, file]) => [branch, fakeAgent(repo.dir, { files: { [file]: `${file}-MARKER\n` } })]),
+    );
+    const calls: AgentCall[] = [];
+    const agent: FakeAgent = {
+      calls,
+      run(call) {
+        calls.push(call);
+        return agents[call.branch]!.run(call);
+      },
+    };
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: config(true), count: 3, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["01", "awaiting-merge"],
+      ["02", "awaiting-merge"],
+      ["03", "awaiting-merge"],
+    ]);
+    // C is cut from B's tip, which contains A's commits.
+    git(repo.dir, "merge-base", "--is-ancestor", "issue/01-first", "issue/02-second");
+    git(repo.dir, "merge-base", "--is-ancestor", "issue/02-second", "issue/03-third");
+    expect(git(repo.dir, "show", "issue/03-third:a.txt")).toBe("a.txt-MARKER");
+    expect(git(repo.dir, "show", "issue/03-third:b.txt")).toBe("b.txt-MARKER");
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([
+      ["issue/01-first", "main"],
+      ["issue/02-second", "issue/01-first"],
+      ["issue/03-third", "issue/02-second"],
+    ]);
+    const review = calls.find((c) => c.stage === "review-session" && c.branch === "issue/03-third")!;
+    expect(review.prompt).toContain("+c.txt-MARKER");
+    expect(review.prompt).not.toContain("b.txt-MARKER");
+    expect(output.join("\n")).toContain("Starting Issue 03 on issue/03-third stacked on issue/02-second");
+  });
+
+  it("keeps the paused-first rule and the lowest-numbered order with stacking on", async () => {
+    write("01-first", "awaiting-merge");
+    write("02-second", "ready-for-agent", "01");
+    write("03-third", "ready-for-agent");
+    repo.write(`${ISSUES}/04-fourth.md`, "# 04: Fourth\n\nStatus: paused\n\nDo it.\n");
+    commitAndPush();
+    const store = createIssueStore(repo.dir, { stack: true });
+
+    expect((await store.next())?.id).toBe("04");
+    repo.write(`${ISSUES}/04-fourth.md`, "# 04: Fourth\n\nStatus: done\n\nDo it.\n");
+    expect((await store.next())?.id).toBe("02");
+  });
+});
+
 describe("Picking Stacked Issues", () => {
   let repo: TempRepo;
   beforeEach(() => (repo = createTempRepo()));
@@ -144,7 +261,7 @@ describe("Picking Stacked Issues", () => {
 
     expect(await store.next()).toBeNull();
     expect(await store.blocked()).toEqual([
-      { id: "03", blockers: ["01", "02"] },
+      { id: "03", blockers: ["01", "02"], tooManyToStack: true },
       { id: "05", blockers: ["04"] },
     ]);
   });

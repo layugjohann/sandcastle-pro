@@ -1,6 +1,6 @@
 # 05: Name the blocker in the Pull Request, and document stacking
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/27
 Blocked by: 01
 

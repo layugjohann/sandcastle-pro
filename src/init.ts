@@ -228,6 +228,9 @@ a Run only implements and reviews them.
 - \`Model:\` optional; overrides the configured model for this Issue only, e.g. \`Model: claude-sonnet-5-5\`.
   Put it above any \`## Comments\` heading; below it, it is ignored.
 
+Each label may also be written in bold, \`**Status:** ready-for-agent\` or \`**Status**: ready-for-agent\`.
+A Run keeps the style it finds: when it rewrites a bold line, the line stays bold; a line it adds is plain.
+
 The rest of the file describes the work: what to build, and a checklist of acceptance criteria.
 
 ## Statuses

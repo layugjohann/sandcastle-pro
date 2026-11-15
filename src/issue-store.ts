@@ -94,24 +94,34 @@ export interface IssueStore {
 }
 
 const ISSUE_FILE = /^(\d+)-(.+)\.md$/;
-const STATUS_LINE = /^Status:[ \t]*(\S*).*$/m;
-const PAUSED_SESSION_LINE = /^Paused session:[ \t]*(.*)$/m;
-const PAUSED_STAGE_LINE = /^Paused stage:[ \t]*(.*)$/m;
-const PAUSE_RECORD = /^Paused (session|stage):.*\n?/gm;
-const PULL_REQUEST_LINE = /^Pull Request:[ \t]*(.*)$/m;
-/** Plain, or bold as in `**Stacked on:** issue/01-first`. */
-const STACKED_ON_LINE = /^(?:\*\*)?Stacked on:(?:\*\*)?[ \t]*(.*)$/m;
-const BLOCKED_BY_LINE = /^(?:\*\*)?Blocked by:(?:\*\*)?.*$/m;
+
+/**
+ * The Issue header line for `label`, written plain (`Status: x`) or bold (`**Status:** x`, `**Status**: x`).
+ * Group 1 is the label as written, up to and including its colon and any closing `**`; group 2 is `value`'s match.
+ */
+function headerLine(label: string, value = "(.*)$", flags = "m"): RegExp {
+  return new RegExp(`^((?:\\*\\*)?${label}(?:\\*\\*)?:(?:\\*\\*)?)[ \\t]*${value}`, flags);
+}
+
+const STATUS_LINE = headerLine("Status", "(\\S*).*$");
+const BLOCKED_BY_LINE = headerLine("Blocked by");
+const MODEL_LINE = headerLine("Model");
+const SPEC_LINE = headerLine("Spec", "`?([^`\\s]+)`?");
+const PAUSED_SESSION_LINE = headerLine("Paused session");
+const PAUSED_STAGE_LINE = headerLine("Paused stage");
+const PAUSE_RECORD = headerLine("Paused (?:session|stage)", ".*\\n?", "gm");
+const PULL_REQUEST_LINE = headerLine("Pull Request");
+const STACKED_ON_LINE = headerLine("Stacked on");
 
 /** The branch on the `Stacked on:` line above `## Comments`, or undefined when there is none. */
 function parseStackedOn(text: string): string | undefined {
-  const value = STACKED_ON_LINE.exec(headerOf(text))?.[1]?.replace(/[`*]/g, "").trim();
+  const value = STACKED_ON_LINE.exec(headerOf(text))?.[2]?.replace(/[`*]/g, "").trim();
   return value || undefined;
 }
 
 /** The `Stacked on:` line for `branch`, in bold when the header's `Status:` or `Blocked by:` line is. */
 function stackedOnLine(header: string, branch: string): string {
-  return /^\*\*(?:Status|Blocked by):\*\*/m.test(header) ? `**Stacked on:** ${branch}` : `Stacked on: ${branch}`;
+  return /^\*\*(?:Status|Blocked by)(?::\*\*|\*\*:)/m.test(header) ? `**Stacked on:** ${branch}` : `Stacked on: ${branch}`;
 }
 
 /** `header` with `line` placed under its `Blocked by:` line, else its `Status:` line, else its title. */
@@ -123,7 +133,7 @@ function insertStackedOn(header: string, line: string): string {
 
 /** The URL on the `Pull Request:` line above `## Comments`, or undefined when there is none. */
 function parsePullRequest(text: string): string | undefined {
-  const value = PULL_REQUEST_LINE.exec(headerOf(text))?.[1]?.replace(/[`<>]/g, "").trim();
+  const value = PULL_REQUEST_LINE.exec(headerOf(text))?.[2]?.replace(/[`<>]/g, "").trim();
   return value || undefined;
 }
 
@@ -134,7 +144,7 @@ function parseTitle(text: string): string | undefined {
 }
 
 function parseStatus(text: string): Status | undefined {
-  const value = STATUS_LINE.exec(text)?.[1];
+  const value = STATUS_LINE.exec(text)?.[2];
   return STATUSES.find((s) => s === value);
 }
 
@@ -143,7 +153,7 @@ function parseStatus(text: string): Status | undefined {
  * A missing line or `None` means unblocked; a blocker the Run can't read stays unfinished.
  */
 function parseBlockedBy(text: string): string[] {
-  const value = /^Blocked by:[ \t]*(.*)$/m.exec(text)?.[1]?.trim() ?? "";
+  const value = BLOCKED_BY_LINE.exec(text)?.[2]?.trim() ?? "";
   if (value === "" || /^none\b/i.test(value)) return [];
   return value
     .split(/,|\band\b/)
@@ -157,7 +167,7 @@ function parseBlockedBy(text: string): string[] {
  * Only text above `## Comments` counts, so Gate output or Findings appended there can't change the model.
  */
 function parseModel(text: string): string | undefined {
-  const value = /^Model:[ \t]*(.*)$/m.exec(headerOf(text))?.[1]?.replace(/`/g, "").trim();
+  const value = MODEL_LINE.exec(headerOf(text))?.[2]?.replace(/`/g, "").trim();
   return value || undefined;
 }
 
@@ -166,8 +176,8 @@ const PAUSABLE_STAGES: readonly PausableStage[] = ["implementer", "review-sessio
 /** The pause record of a `paused` Issue, or undefined when either line is missing or unreadable. */
 function parsePausedAt(text: string): PausedAt | undefined {
   const header = headerOf(text);
-  const sessionId = PAUSED_SESSION_LINE.exec(header)?.[1]?.replace(/`/g, "").trim();
-  const stageName = PAUSED_STAGE_LINE.exec(header)?.[1]?.trim();
+  const sessionId = PAUSED_SESSION_LINE.exec(header)?.[2]?.replace(/`/g, "").trim();
+  const stageName = PAUSED_STAGE_LINE.exec(header)?.[2]?.trim();
   const stage = PAUSABLE_STAGES.find((s) => STAGE_NAMES[s] === stageName);
   return sessionId && stage ? { sessionId, stage } : undefined;
 }
@@ -235,7 +245,7 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
   }
 
   async function readSpec(issuePath: string, text: string): Promise<string | undefined> {
-    const declared = /^Spec:[ \t]*`?([^`\s]+)`?/m.exec(text)?.[1];
+    const declared = SPEC_LINE.exec(text)?.[2];
     const candidates = declared
       ? [join(repoDir, declared)]
       : [join(dirname(dirname(issuePath)), "spec.md")];
@@ -304,8 +314,13 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
     },
 
     async pause(issue, { sessionId, stage }) {
-      const text = withStatus(await readFile(issue.path, "utf8"), "paused");
-      const record = `Paused session: ${sessionId}\nPaused stage: ${STAGE_NAMES[stage]}`;
+      const before = await readFile(issue.path, "utf8");
+      const bold = PAUSED_SESSION_LINE.exec(headerOf(before))?.[1]?.startsWith("**") ?? false;
+      const text = withStatus(before, "paused");
+      const record = [
+        labelled("Paused session", sessionId, bold),
+        labelled("Paused stage", STAGE_NAMES[stage], bold),
+      ].join("\n");
       await writeFile(issue.path, text.replace(STATUS_LINE, (line) => `${line}\n${record}`));
     },
 
@@ -320,7 +335,7 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
       const header = headerOf(text);
       const line = `Pull Request: ${url}`;
       const updated = PULL_REQUEST_LINE.test(header)
-        ? header.replace(PULL_REQUEST_LINE, line)
+        ? header.replace(PULL_REQUEST_LINE, (_line, label: string) => `${label} ${url}`)
         : STATUS_LINE.test(header)
           ? header.replace(STATUS_LINE, (status) => `${status}\n${line}`)
           : insertAfterTitle(header, line);
@@ -341,8 +356,13 @@ function withStatus(text: string, status: Status): string {
   const rest = text.slice(header.length);
   const cleared = header.replace(PAUSE_RECORD, "") + rest;
   return STATUS_LINE.test(cleared)
-    ? cleared.replace(STATUS_LINE, `Status: ${status}`)
+    ? cleared.replace(STATUS_LINE, (_line, label: string) => `${label} ${status}`)
     : insertAfterTitle(cleared, `Status: ${status}`);
+}
+
+/** `label: value`, or `**label:** value` when `bold`. */
+function labelled(label: string, value: string, bold: boolean): string {
+  return bold ? `**${label}:** ${value}` : `${label}: ${value}`;
 }
 
 function insertAfterTitle(text: string, line: string): string {

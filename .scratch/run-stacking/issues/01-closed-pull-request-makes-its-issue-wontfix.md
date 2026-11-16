@@ -1,6 +1,6 @@
 # 01: Closing a Pull Request makes its Issue wontfix and cascades up the Stack
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: None
 
 Spec: `.scratch/run-stacking/spec.md` (stories 33–38), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -15,3 +15,16 @@ Spec: `.scratch/run-stacking/spec.md` (stories 33–38), ADR `docs/adr/0005-a-ru
 - [x] Tested at the `runWorkflow` seam with the fake publisher and a three-Issue Stack: closing the bottom Pull Request makes it `wontfix` and sends both Issues above it to `ready-for-human`. An Issue above it that was merged into the target branch goes to `done`. With `stack` off, a closed Pull Request still gives `wontfix`.
 
 ## Comments
+
+Usage: Implementer 36 input, 15,154 output, 50,503 cache creation, 798,517 cache read; Review Session 8 input, 4,481 output, 34,968 cache creation, 134,340 cache read.
+
+**Review Session: Non-critical Findings**
+
+- strandedByClosedIssues does two jobs: it climbs the Stack from each closed Issue, then gives each stranded Issue the lowest closure below it. Splitting the climb into its own helper would make each part easier to read (Preset: each function does one thing).
+- strandedByClosedIssues finds the lowest closed Issue by sorting closed Issues on how many Issues sit above each. That is correct, because a lower closed Issue always has strictly more above it, but it is indirect. Checking whether one closed Issue is reachable from another would say what it means.
+- Each level of the climb calls store.stackedOn, and every call reads and parses all Issue files again, so the cost grows with the square of the Stack's size. Reading the Issue files once and following the Stacked on: lines in memory would avoid the repeated reads.
+- The comment for an Issue several levels up still opens with '**Blocker closed**', even though the closed Issue is not one of its blockers. Spec story 30 asks for 'Base Issue' wording; the Spec's suggested split leaves this to Issue 04.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-01-2026-11-16T20-50-13-380Z.log`).
+
+Usage: Body writer 2 input, 1,247 output, 27,481 cache creation, 11,370 cache read.

@@ -547,7 +547,7 @@ describe("Detecting merges of Stacked Issues", () => {
     expect(statusOf(B)).toBe("ready-for-human");
     expect(commentsOf(B).match(/Blocker closed/g)).toHaveLength(1);
     expect(commentsOf(B)).toContain(`the branch of Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
-    expect(statusOf(A)).toBe("awaiting-merge");
+    expect(statusOf(A)).toBe("wontfix");
     const text = output.join("\n");
     expect(text).toContain(`Warning: could not read the state of Issue 02's Pull Request ${PR_B}, so it stays awaiting-merge: gh: could not resolve ${PR_B}`);
     expect(text).toContain(`Issue 02 is ready-for-human: it is stacked on Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
@@ -587,7 +587,7 @@ describe("Detecting merges of Stacked Issues", () => {
 
     await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
 
-    expect(statusOf(A)).toBe("awaiting-merge");
+    expect(statusOf(A)).toBe("wontfix");
     expect(statusOf(B)).toBe("ready-for-human");
     expect(commentsOf(B)).toContain(
       `**Blocker closed**: this Issue is stacked on \`issue/01-first\`, the branch of Issue 01, whose Pull Request ${PR_A} was closed without being merged.`,
@@ -597,7 +597,7 @@ describe("Detecting merges of Stacked Issues", () => {
     expect(commentsOf(`${ISSUES}/04-human.md`)).not.toContain("Blocker closed");
     expect(publisher.stateLookups).toEqual([PR_A, PR_B]);
     const text = output.join("\n");
-    expect(text).toContain(`Warning: Issue 01's Pull Request ${PR_A} was closed without being merged, so it stays awaiting-merge.`);
+    expect(text).toContain(`Issue 01 is wontfix: its Pull Request ${PR_A} was closed without being merged.`);
     expect(text).toContain(`Issue 02 is ready-for-human: it is stacked on Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
 
     // A later Run does not comment again.
@@ -664,7 +664,7 @@ describe.each([
     expect(commentsOf(STACKED)).not.toContain("Blocker closed");
     expect(git(repo.dir, "rev-parse", "HEAD")).toBe(git(origin, "rev-parse", "main"));
     expect(repo.read("b.txt")).toBe("B-MARKER\n");
-    expect(statusOf(BLOCKER)).toBe("awaiting-merge");
+    expect(statusOf(BLOCKER)).toBe("wontfix");
     const text = output.join("\n");
     expect(text).toContain(`Issue ${stacked.slice(0, 2)} is done: its Pull Request ${PR_STACKED} is merged.`);
     expect(text).not.toContain("is ready-for-human");
@@ -694,9 +694,140 @@ describe.each([
     expect(statusOf(STACKED)).toBe("ready-for-human");
     expect(commentsOf(STACKED).match(/Blocker closed/g)).toHaveLength(1);
     expect(commentsOf(STACKED)).toContain(`the branch of Issue ${blocker.slice(0, 2)}, whose Pull Request ${PR_BLOCKER} was closed without being merged.`);
-    expect(statusOf(BLOCKER)).toBe("awaiting-merge");
+    expect(statusOf(BLOCKER)).toBe("wontfix");
     expect(output.join("\n")).toContain(
       `Issue ${stacked.slice(0, 2)} is ready-for-human: it is stacked on Issue ${blocker.slice(0, 2)}, whose Pull Request ${PR_BLOCKER} was closed without being merged.`,
     );
+  });
+});
+
+describe("A closed Pull Request in a three-Issue Stack", () => {
+  let repo: TempRepo;
+  let origin: string;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const C = `${ISSUES}/03-third.md`;
+  const PR_A = "https://github.com/owner/repo/pull/1";
+  const PR_B = "https://github.com/owner/repo/pull/2";
+  const PR_C = "https://github.com/owner/repo/pull/3";
+  const statusOf = (file: string) => /^Status:\s*(\S+)/m.exec(repo.read(file))?.[1];
+  const commentsOf = (file: string) => repo.read(file).split(/^## Comments$/m)[1] ?? "";
+
+  beforeEach(async () => {
+    repo = createTempRepo();
+    output = [];
+    origin = mkdtempSync(join(tmpdir(), "sandcastle-pro-origin-"));
+    git(origin, "init", "-q", "--bare", "-b", "main");
+    git(repo.dir, "remote", "add", "origin", origin);
+    repo.write(".scratch/feature/spec.md", "# Spec: feature\n\nSpec body.\n");
+    repo.write(A, issueFile({ title: "01: First slice", status: "ready-for-agent" }));
+    repo.write(B, issueFile({ title: "02: Second slice", status: "ready-for-agent", extra: "Blocked by: 01" }));
+    repo.write(C, issueFile({ title: "03: Third slice", status: "ready-for-agent", extra: "Blocked by: 02" }));
+    repo.commitAll("add issues");
+    git(repo.dir, "push", "-q", "-u", "origin", "main");
+    const agents: Record<string, Agent> = {
+      "issue/01-first": fakeAgent(repo.dir, { files: { "a.txt": "A\n" } }),
+      "issue/02-second": fakeAgent(repo.dir, { files: { "b.txt": "B\n" } }),
+      "issue/03-third": fakeAgent(repo.dir, { files: { "c.txt": "C\n" } }),
+    };
+    const agent: Agent = { run: (call) => agents[call.branch]!.run(call) };
+    // One Run publishes 01, 02 stacked on it, and 03 stacked on 02.
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher({ pushFrom: repo.dir }), config: config(true), count: 3, log });
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["01", "awaiting-merge"],
+      ["02", "awaiting-merge"],
+      ["03", "awaiting-merge"],
+    ]);
+    expect(repo.read(C)).toContain("Stacked on: issue/02-second");
+    expect(repo.read(C)).toContain(`Pull Request: ${PR_C}`);
+    output = [];
+  });
+  afterEach(() => {
+    repo.cleanup();
+    rmSync(origin, { recursive: true, force: true });
+  });
+
+  it("makes the bottom Issue wontfix and sends both Issues above it to ready-for-human, naming it, once", async () => {
+    const publisher = fakePublisher({
+      states: {
+        [PR_A]: { state: "CLOSED", base: "main" },
+        [PR_B]: { state: "OPEN", base: "issue/01-first" },
+        [PR_C]: { state: "OPEN", base: "issue/02-second" },
+      },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(A)).toBe("wontfix");
+    expect(commentsOf(A)).toContain(`**Pull Request closed**: this Issue's Pull Request ${PR_A} was closed without being merged, so it is wontfix.`);
+    expect(statusOf(B)).toBe("ready-for-human");
+    expect(commentsOf(B)).toContain(`the branch of Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
+    expect(statusOf(C)).toBe("ready-for-human");
+    expect(commentsOf(C)).toContain(
+      `**Blocker closed**: this Issue is stacked on \`issue/02-second\`, which is above \`issue/01-first\`, the branch of Issue 01, in the Stack. Issue 01's Pull Request ${PR_A} was closed without being merged.`,
+    );
+    const text = output.join("\n");
+    expect(text).toContain(`Issue 01 is wontfix: its Pull Request ${PR_A} was closed without being merged.`);
+    expect(text).toContain(`Issue 02 is ready-for-human: it is stacked on Issue 01, whose Pull Request ${PR_A} was closed without being merged.`);
+    expect(text).toContain(`Issue 03 is ready-for-human: it is above Issue 01 in the Stack, whose Pull Request ${PR_A} was closed without being merged.`);
+
+    // A later Run does not comment again.
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+    for (const file of [A, B, C]) expect(commentsOf(file).match(/closed without being merged/g)).toHaveLength(1);
+  });
+
+  it("marks an Issue above the closed one done when its Pull Request was merged into the target branch", async () => {
+    mergeOnOrigin(origin, "main", "issue/03-third");
+    const publisher = fakePublisher({
+      states: {
+        [PR_A]: { state: "CLOSED", base: "main" },
+        [PR_B]: { state: "OPEN", base: "issue/01-first" },
+        [PR_C]: { state: "MERGED", base: "main" },
+      },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(A)).toBe("wontfix");
+    expect(statusOf(B)).toBe("ready-for-human");
+    expect(statusOf(C)).toBe("done");
+    expect(commentsOf(C)).not.toContain("Blocker closed");
+    expect(output.join("\n")).toContain(`Issue 03 is done: its Pull Request ${PR_C} is merged.`);
+  });
+
+  it("leaves the Issue below a closed one in the middle of the Stack awaiting-merge", async () => {
+    const publisher = fakePublisher({
+      states: {
+        [PR_A]: { state: "OPEN", base: "main" },
+        [PR_B]: { state: "CLOSED", base: "issue/01-first" },
+        [PR_C]: { state: "OPEN", base: "issue/02-second" },
+      },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(A)).toBe("awaiting-merge");
+    expect(statusOf(B)).toBe("wontfix");
+    expect(statusOf(C)).toBe("ready-for-human");
+    expect(commentsOf(C)).toContain(`the branch of Issue 02, whose Pull Request ${PR_B} was closed without being merged.`);
+  });
+
+  it("names the lowest closed Issue when two in one Stack were closed", async () => {
+    const publisher = fakePublisher({
+      states: {
+        [PR_A]: { state: "CLOSED", base: "main" },
+        [PR_B]: { state: "CLOSED", base: "issue/01-first" },
+        [PR_C]: { state: "OPEN", base: "issue/02-second" },
+      },
+    });
+
+    await runWorkflow({ repoDir: repo.dir, agent: fakeAgent(repo.dir), publisher, config: config(true), log });
+
+    expect(statusOf(A)).toBe("wontfix");
+    expect(statusOf(B)).toBe("wontfix");
+    expect(commentsOf(B)).not.toContain("Blocker closed");
+    expect(statusOf(C)).toBe("ready-for-human");
+    expect(commentsOf(C).match(/Blocker closed/g)).toHaveLength(1);
+    expect(commentsOf(C)).toContain(`Issue 01's Pull Request ${PR_A} was closed without being merged.`);
   });
 });

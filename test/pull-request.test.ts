@@ -322,7 +322,7 @@ describe("Merge detection through the Pull Request", () => {
     expect(statusOf("01-local.md")).toBe("done");
   });
 
-  it("logs a warning naming the Issue and its URL when the Pull Request was closed without being merged", async () => {
+  it("with stack off, makes the Issue wontfix with a comment naming its URL when the Pull Request was closed without being merged", async () => {
     awaitingWithPullRequest("01-closed.md", "01: Closed");
     repo.commitAll("add issue");
 
@@ -334,8 +334,11 @@ describe("Merge detection through the Pull Request", () => {
       log,
     });
 
-    expect(statusOf("01-closed.md")).toBe("awaiting-merge");
-    expect(output.join("\n")).toMatch(/Warning: Issue 01's Pull Request https:\/\/github\.com\/owner\/repo\/pull\/7 was closed without being merged/);
+    expect(statusOf("01-closed.md")).toBe("wontfix");
+    expect(repo.read(`${ISSUES}/01-closed.md`).split(/^## Comments$/m)[1]).toContain(
+      `**Pull Request closed**: this Issue's Pull Request ${URL} was closed without being merged, so it is wontfix.`,
+    );
+    expect(output.join("\n")).toContain(`Issue 01 is wontfix: its Pull Request ${URL} was closed without being merged.`);
   });
 });
 

@@ -1,6 +1,7 @@
 # 01: Closing a Pull Request makes its Issue wontfix and cascades up the Stack
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/30
 Blocked by: None
 
 Spec: `.scratch/run-stacking/spec.md` (stories 33–38), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -28,3 +29,5 @@ Usage: Implementer 36 input, 15,154 output, 50,503 cache creation, 798,517 cache
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-01-2026-11-16T20-50-13-380Z.log`).
 
 Usage: Body writer 2 input, 1,247 output, 27,481 cache creation, 11,370 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/30

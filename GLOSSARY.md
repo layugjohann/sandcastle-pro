@@ -49,8 +49,16 @@ A Coding Standard marked as mandatory. Breaking it is a Critical Finding rather 
 _Avoid_: Hard rule, required standard
 
 **Stacked Issue**:
-An Issue started on top of the branch of its one blocker that is not yet merged. It is reviewed against that blocker, and it is only done once it reaches the target branch.
+An Issue started on the branch of another Issue that is not yet merged, its Base Issue. It is reviewed against that branch, and it is only done once it reaches the target branch.
 _Avoid_: Dependent PR, chained Issue
+
+**Base Issue**:
+The unmerged Issue a Stacked Issue is started on. It may or may not be one of the Stacked Issue's blockers.
+_Avoid_: Parent, blocker (when it is not one)
+
+**Stack**:
+The line of Issues awaiting merge, each started on the one before it, which the human merges from the bottom up.
+_Avoid_: Chain, queue
 
 **Pull Request**:
 The published form of one Issue's branch, opened once it passes the Gate, which the human reviews and merges.

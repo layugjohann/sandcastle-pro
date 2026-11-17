@@ -1,6 +1,6 @@
 # 01: Closing a Pull Request makes its Issue wontfix and cascades up the Stack
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/30
 Blocked by: None
 

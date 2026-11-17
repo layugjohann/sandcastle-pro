@@ -39,7 +39,7 @@ export interface Issue {
   paused: PausedAt | undefined;
   /** The URL on the Issue's `Pull Request:` line, once a Run has published it. */
   pullRequest: string | undefined;
-  /** The blocker branch on the Issue's `Stacked on:` line, which a Run writes when it starts a Stacked Issue. */
+  /** The Base Issue's branch on the Issue's `Stacked on:` line, which a Run writes when it starts a Stacked Issue. */
   stackedOn: string | undefined;
   /**
    * The branch of the Base Issue `next()` picked this Issue on top of, when stacking is on and the Issue has no

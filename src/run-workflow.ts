@@ -12,7 +12,7 @@ import { baseOf, createIssueStore, mergeIssueFile, type BlockedIssue, type Issue
 import { fenced } from "./markdown.js";
 import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
-import { buildPullRequestBody, buildWrittenPullRequestBody, stackedOnText, truncateStart, type PullRequestBodyInput, type StackedOnBlocker } from "./pull-request-body.js";
+import { buildPullRequestBody, buildWrittenPullRequestBody, stackedOnText, truncateStart, type PullRequestBodyInput, type StackedOnBaseIssue } from "./pull-request-body.js";
 import { formatUsage, type IssueUsage } from "./usage.js";
 
 const exec = promisify(execFile);
@@ -177,7 +177,7 @@ type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "tar
 /**
  * Moves each `awaiting-merge` Issue the human has merged to `done`. An Issue with a Pull Request is merged when
  * GitHub says it was merged into the target branch, which also sees squash merges; one without is merged when its
- * branch is in the target branch. A Pull Request merged into another branch, such as a Stacked Issue's blocker
+ * branch is in the target branch. A Pull Request merged into another branch, such as a Stacked Issue's Base Issue
  * branch, leaves its Issue `awaiting-merge`. A Pull Request closed without merging makes its Issue `wontfix` and sends
  * every Issue above it in the Stack to `ready-for-human`, except those whose own Pull Request reached the target branch.
  *
@@ -207,7 +207,7 @@ async function markMergedIssuesDone(context: IssueContext): Promise<void> {
     if (status.state !== "MERGED") continue;
     if (status.base !== targetBranch) {
       log(
-        `Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was merged into ${status.base}, not the target branch ${targetBranch}, so it stays awaiting-merge. Merge its blocker first, so GitHub retargets the next Pull Request to ${targetBranch}.`,
+        `Warning: Issue ${issue.id}'s Pull Request ${issue.pullRequest} was merged into ${status.base}, not the target branch ${targetBranch}, so it stays awaiting-merge. Merge its Base Issue's Pull Request first, so GitHub retargets the next Pull Request to ${targetBranch}.`,
       );
       continue;
     }
@@ -293,8 +293,8 @@ async function sendToHuman(issue: Issue, closedIssue: Issue, { store, log }: Iss
   await store.comment(
     issue,
     direct
-      ? `**Blocker closed**: this Issue is stacked on \`${closedIssue.branch}\`, the branch of Issue ${closedIssue.id}, whose Pull Request ${closedIssue.pullRequest} was closed without being merged. Decide what to do with this work: rebase it onto another branch and remove the \`Stacked on:\` line, or close it.`
-      : `**Blocker closed**: this Issue is stacked on \`${issue.stackedOn}\`, which is above \`${closedIssue.branch}\`, the branch of Issue ${closedIssue.id}, in the Stack. Issue ${closedIssue.id}'s Pull Request ${closedIssue.pullRequest} was closed without being merged. Decide what to do with this work: rebase it onto another branch and update or remove the \`Stacked on:\` line, or close it.`,
+      ? `**Base Issue closed**: this Issue is stacked on \`${closedIssue.branch}\`, the branch of Issue ${closedIssue.id}, whose Pull Request ${closedIssue.pullRequest} was closed without being merged. Decide what to do with this work: rebase it onto another branch and remove the \`Stacked on:\` line, or close it.`
+      : `**Base Issue closed**: this Issue is stacked on \`${issue.stackedOn}\`, which is above \`${closedIssue.branch}\`, the branch of Issue ${closedIssue.id}, in the Stack. Issue ${closedIssue.id}'s Pull Request ${closedIssue.pullRequest} was closed without being merged. Decide what to do with this work: rebase it onto another branch and update or remove the \`Stacked on:\` line, or close it.`,
   );
   log(
     direct
@@ -314,7 +314,7 @@ interface DiscardedEdit {
 
 /**
  * Fast-forwards the target branch over the merged Pull Requests of `issues`. A merged Stacked Issue's branch also
- * holds the Issue files of the blockers it is stacked on, so the pull brings those in too. Each such file's local
+ * holds the Issue files of the Issues it is stacked on, so the pull brings those in too. Each such file's local
  * edit, which would make `git pull` refuse, is discarded first, but only when it matches the file at the tip of the
  * merged Issue's branch, so nothing the merge does not bring back is lost. When a check or the pull fails, the files
  * are put back as they were and a warning is logged. Returns the Issues that caught up. Other files are never touched.
@@ -333,11 +333,11 @@ async function pullMergedIssueFiles(issues: readonly Issue[], context: IssueCont
       warn(issue, file, `the target branch ${targetBranch} is not checked out (the working copy is on ${current || "a detached HEAD"}).`);
       continue;
     }
-    // Its own file always; a blocker's file only when it has a local edit the pull would refuse to overwrite. A file
+    // Its own file always; a Base Issue's file only when it has a local edit the pull would refuse to overwrite. A file
     // an earlier Issue's check already discarded is skipped: the pull brings it in for both.
     const already = new Set(discarded.map((edit) => edit.path));
     const paths = already.has(issue.path) ? [] : [issue.path];
-    for (const path of await blockerPaths(issue, context)) {
+    for (const path of await baseIssuePaths(issue, context)) {
       if (!already.has(path) && (await git(repoDir, "status", "--porcelain", "--", relative(repoDir, path)))) paths.push(path);
     }
     let failure: { file: string; reason: string } | undefined;
@@ -387,15 +387,15 @@ async function pullMergedIssueFiles(issues: readonly Issue[], context: IssueCont
 }
 
 /** The files of the Issues `issue` is stacked on, following each `Stacked on:` line down the chain. */
-async function blockerPaths(issue: Issue, { store }: IssueContext): Promise<string[]> {
+async function baseIssuePaths(issue: Issue, { store }: IssueContext): Promise<string[]> {
   const paths: string[] = [];
   const seen = new Set([issue.path]);
   for (let branch = issue.stackedOn; branch; ) {
-    const blocker = await store.byBranch(branch);
-    if (!blocker || seen.has(blocker.path)) break;
-    seen.add(blocker.path);
-    paths.push(blocker.path);
-    branch = blocker.stackedOn;
+    const baseIssue = await store.byBranch(branch);
+    if (!baseIssue || seen.has(baseIssue.path)) break;
+    seen.add(baseIssue.path);
+    paths.push(baseIssue.path);
+    branch = baseIssue.stackedOn;
   }
   return paths;
 }
@@ -471,7 +471,7 @@ async function sendBackIfBaseMoved(issue: Issue, base: string, options: IssueCon
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
   const { repoDir, log, store, config } = options;
   const { branch } = issue;
-  // The branch this Issue's work is measured from and published against: its blocker's, for a Stacked Issue.
+  // The branch this Issue's work is measured from and published against: its Base Issue's, for a Stacked Issue.
   const base = baseOf(issue, options.targetBranch);
   const moved = await sendBackIfBaseMoved(issue, base, options);
   if (moved) return moved;
@@ -582,7 +582,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   }
 
   const written = await writeBody(issue, base, review.findings, gate.output, usage, options);
-  const stackedOn = await blockerOf(base, options);
+  const stackedOn = await baseIssueOf(base, options);
   const bodyInput: PullRequestBodyInput = { gateOutput: gate.output, findings: review.findings, usage, stackedOn };
   const body = written.body !== undefined ? buildWrittenPullRequestBody(written.body, bodyInput) : buildPullRequestBody(bodyInput, written.note);
   const pullRequest = await publishPullRequest(issue, base, body, stackedOn, options);
@@ -596,11 +596,11 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
   return { outcome: "awaiting-merge", issue, branch, review, usage, pullRequest, bodyWriter: written.result };
 }
 
-/** The blocker whose branch is `base`, for a Stacked Issue; undefined when `base` is the target branch. */
-async function blockerOf(base: string, { targetBranch, store }: IssueContext): Promise<StackedOnBlocker | undefined> {
+/** The Base Issue whose branch is `base`, for a Stacked Issue; undefined when `base` is the target branch. */
+async function baseIssueOf(base: string, { targetBranch, store }: IssueContext): Promise<StackedOnBaseIssue | undefined> {
   if (base === targetBranch) return undefined;
-  const blocker = await store.byBranch(base);
-  return { id: blocker?.id, branch: base, pullRequest: blocker?.pullRequest, targetBranch };
+  const baseIssue = await store.byBranch(base);
+  return { id: baseIssue?.id, branch: base, pullRequest: baseIssue?.pullRequest, targetBranch };
 }
 
 /**
@@ -679,7 +679,7 @@ async function restoreBranch(
 
 /**
  * Merges the Issue file, with its Run comments, onto the Issue's branch, pushes the branch and opens its Pull
- * Request against `base`: the target branch, or the blocker's branch for a Stacked Issue. Once it is open, the URL is recorded, the Issue moves to `awaiting-merge`,
+ * Request against `base`: the target branch, or the Base Issue's branch for a Stacked Issue. Once it is open, the URL is recorded, the Issue moves to `awaiting-merge`,
  * and the Issue file is merged onto the branch and pushed again, so the working copy's file matches the branch
  * tip. When publishing fails, the branch is put back as it was, so the Issue-file commit never lingers on it. The
  * host does all this, never the sandbox. A failure is commented on the Issue and returned rather than thrown, so
@@ -689,7 +689,7 @@ async function publishPullRequest(
   issue: Issue,
   base: string,
   body: string,
-  stackedOn: StackedOnBlocker | undefined,
+  stackedOn: StackedOnBaseIssue | undefined,
   options: IssueContext,
 ): Promise<PublishResult> {
   const { store, publisher, repoDir, log } = options;
@@ -715,8 +715,8 @@ async function publishPullRequest(
   try {
     await writeFile(issue.path, merged);
     await store.recordPullRequest(issue, url);
-    const blocker = stackedOn === undefined ? "" : `\n\n${stackedOnText(stackedOn)}`;
-    await store.comment(issue, `**Pull Request opened**: ${url}${blocker}`);
+    const stackedOnNote = stackedOn === undefined ? "" : `\n\n${stackedOnText(stackedOn)}`;
+    await store.comment(issue, `**Pull Request opened**: ${url}${stackedOnNote}`);
     await store.transition(issue, "awaiting-merge");
     await writeFile(issue.path, await commitIssueFile(repoDir, issue, merged, commitMessage));
     await publisher.push(issue.branch);

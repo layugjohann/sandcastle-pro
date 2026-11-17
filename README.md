@@ -106,7 +106,7 @@ Run it from the target branch (usually `main`), with a clean working tree. It ex
 | `pullRequest` | `false` | Push each Issue that passes the Gate, and open a Pull Request for it. |
 | `bodyWriter.model` | `claude-sonnet-5-5` | Model that writes Pull Request bodies. |
 | `bodyWriter.effort` | `low` | Its reasoning effort. |
-| `stack` | `false` | Build blocked Issues on top of their unmerged blocker (see [Stacking](#stacking)). Needs `pullRequest`. |
+| `stack` | `false` | `false`, `true` or `"run"`: build Issues on top of unmerged work (see [Stacking](#stacking)). `"run"` is recommended. `true` and `"run"` need `pullRequest`. |
 
 ## Issues
 
@@ -191,15 +191,27 @@ In Claude Code, run it with `! land-done`.
 
 ## Stacking
 
-With `"stack": true` in `sandcastle-pro.config.json`, a Run does not stop at an Issue whose only unmerged blocker is `awaiting-merge`. It starts that Issue as a Stacked Issue: its branch is cut from the tip of the blocker's branch, its Review Session sees only its own work, and its Pull Request targets the blocker's branch. One Run can then work through a whole chain of dependent Issues. An Issue with two or more unmerged blockers still waits. Stacking is off by default.
+A Stacked Issue is an Issue started on the branch of another Issue that is not merged yet: its Base Issue. Its branch is cut from the tip of the Base Issue's branch, its Review Session sees only its own work, the Gate runs on all the unmerged work below it at once, and its Pull Request targets the Base Issue's branch. The Issues awaiting merge, each started on the one before it, form the Stack.
 
-The Pull Request body of a Stacked Issue starts with a line naming the Issue and Pull Request it is stacked on, and the "Pull Request opened" comment on the Issue names it too.
+Set `stack` in `sandcastle-pro.config.json` to one of:
+
+- **`"run"` (recommended).** Every Issue becomes a Stacked Issue on the top of the Stack: the newest `awaiting-merge` Issue that nothing is stacked on yet. The Base Issue is usually not one of the Issue's blockers. When nothing is `awaiting-merge`, the Issue starts from the target branch. So with `--count 3`, the second Issue is stacked on the first and the third on the second, and the next Run carries on from the top of whatever you haven't merged. Issues that edit the same files never conflict with each other, and a break between them fails the Gate in the sandbox instead of after you merge. An Issue whose blockers are `awaiting-merge` starts only when they are in the Stack below the top. If the Run finds two or more tops, it starts nothing and names them; merge or close Pull Requests until one Stack remains.
+- **`true`.** Only an Issue whose one unmerged blocker is `awaiting-merge` becomes a Stacked Issue, on that blocker's branch. Issues that don't block each other each start from the target branch, so their Pull Requests can conflict once you merge the first one. An Issue with two or more unmerged blockers waits.
+- **`false`** (the default). No stacking: every Issue starts from the target branch, and only `done` blockers count.
+
+The Pull Request body of a Stacked Issue starts with a line naming its Base Issue and that Issue's Pull Request, and the "Pull Request opened" comment on the Issue names it too.
 
 Set up the repository before turning it on:
 
-- **It requires `pullRequest`.** `"stack": true` with `"pullRequest": false` is a config error.
-- **Merge with merge commits, not squash.** A squash merge rewrites the blocker's commits, so the next Pull Request in the chain would show them again and conflict.
-- **Turn on "Automatically delete head branches"** (Settings → General → Pull Requests). When the blocker's branch is deleted on merge, GitHub retargets the next Pull Request to the target branch. An Issue is `done` only once its Pull Request is merged into the target branch.
-- **Merge a chain in order**, blocker first. A Stacked Issue merged into its blocker's branch instead stays `awaiting-merge`, and the Run warns about it.
+- **It requires `pullRequest`.** `"stack": true` or `"stack": "run"` with `"pullRequest": false` is a config error.
+- **Merge with merge commits, not squash merges.** A squash merge rewrites the Base Issue's commits, so the next Pull Request in the Stack would show them again and conflict.
+- **Turn on "Automatically delete head branches"** (Settings → General → Pull Requests). When the Base Issue's branch is deleted on merge, GitHub retargets the next Pull Request to the target branch. An Issue is `done` only once its Pull Request is merged into the target branch.
 
-The Run never rebases a Stacked Issue or merges its blocker into it. If the blocker changes after the Issue was stacked on it, bringing the Stacked Issue up to date is up to you.
+Then, when you merge:
+
+- **Merge the Stack from the bottom up**, starting with the Pull Request that targets the target branch. GitHub then retargets each next Pull Request to the target branch without a conflict. A Stacked Issue merged into its Base Issue's branch instead stays `awaiting-merge`, and the Run warns about it.
+- **Change only the top Pull Request.** Pushing to a Pull Request lower in the Stack leaves the Issues above it built on the old version, which brings back the conflicts stacking prevents. To fix a lower one, merge it as it is and put the fix in a follow-up Issue, which the next Run stacks on the top.
+- **Closing a Pull Request without merging** makes its Issue `wontfix` and sends every Issue above it in the Stack to `ready-for-human`.
+
+The Run never rebases a Stacked Issue or merges its Base Issue into it. If a Base Issue changes after an Issue was stacked on it, bringing the Stacked Issue up to date is up to you.
+

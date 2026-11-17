@@ -221,7 +221,9 @@ a Run only implements and reviews them.
   With \`"stack": true\` in the config (which needs \`"pullRequest": true\`), an Issue whose only blocker that is not
   \`done\` is \`awaiting-merge\` starts as a Stacked Issue: its branch is cut from that blocker's branch, its Review Session
   only sees its own commits, and its Pull Request targets that branch. Merge the chain in order, with merge commits.
-- \`Stacked on:\` the blocker branch a Stacked Issue is built on, e.g. \`Stacked on: issue/01-first\`. Set by a Run; leave it
+  With \`"stack": "run"\`, every Issue starts as a Stacked Issue on the top of the Stack, whether or not that Issue is
+  one of its blockers; an \`awaiting-merge\` blocker must be in the Stack below the top. Merge the Stack from the bottom up.
+- \`Stacked on:\` the branch of the Base Issue a Stacked Issue is built on, e.g. \`Stacked on: issue/01-first\`. Set by a Run; leave it
   alone. Without it, the Issue is based on the target branch.
 - \`Spec:\` the Spec's path from the repo root, e.g. \`Spec: .scratch/<feature>/spec.md\`.
   Without it, \`spec.md\` next to the \`issues/\` directory is used.

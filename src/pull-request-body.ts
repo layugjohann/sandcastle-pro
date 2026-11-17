@@ -13,27 +13,27 @@ export interface PullRequestBodyInput {
   gateOutput: string;
   findings: readonly Finding[];
   usage: IssueUsage;
-  /** The blocker a Stacked Issue is built on; undefined for an Issue based on the target branch. */
-  stackedOn?: StackedOnBlocker;
+  /** The Base Issue a Stacked Issue is built on; undefined for an Issue based on the target branch. */
+  stackedOn?: StackedOnBaseIssue;
 }
 
-/** The blocker a Stacked Issue's Pull Request is stacked on, named at the top of its body. */
-export interface StackedOnBlocker {
-  /** The blocker Issue's id, or undefined when no Issue file has the branch. */
+/** The Base Issue a Stacked Issue's Pull Request is stacked on, named at the top of its body. */
+export interface StackedOnBaseIssue {
+  /** The Base Issue's id, or undefined when no Issue file has the branch. */
   id: string | undefined;
   branch: string;
-  /** The blocker's Pull Request URL, or undefined when it has none recorded. */
+  /** The Base Issue's Pull Request URL, or undefined when it has none recorded. */
   pullRequest: string | undefined;
-  /** The Run's target branch, which the blocker must reach first. */
+  /** The Run's target branch, which the Base Issue must reach first. */
   targetBranch: string;
 }
 
 /**
- * The sentence naming the blocker a Stacked Issue's Pull Request is stacked on, used by the Pull Request body and the
+ * The sentence naming the Base Issue a Stacked Issue's Pull Request is stacked on, used by the Pull Request body and the
  * Issue's "Pull Request opened" comment alike. With `bold`, its "Stacked on" lead is bold.
  */
-export function stackedOnText({ id, branch, pullRequest, targetBranch }: StackedOnBlocker, bold = false): string {
-  const lead = `Stacked on ${id === undefined ? `\`${branch}\`` : `Issue ${id}`}`;
+export function stackedOnText({ id, branch, pullRequest, targetBranch }: StackedOnBaseIssue, bold = false): string {
+  const lead = `Stacked on ${id === undefined ? `\`${branch}\`` : `Base Issue ${id}`}`;
   const detail =
     pullRequest === undefined
       ? `this Pull Request targets \`${branch}\`. Merge \`${branch}\` into \`${targetBranch}\` first.`
@@ -41,13 +41,13 @@ export function stackedOnText({ id, branch, pullRequest, targetBranch }: Stacked
   return `${bold ? `**${lead}**` : lead}: ${detail}`;
 }
 
-/** The line a Stacked Issue's body starts with, so the human merges the chain in order. */
-export function stackedOnLine(blocker: StackedOnBlocker): string {
-  return `> ${stackedOnText(blocker, true)}`;
+/** The line a Stacked Issue's body starts with, so the human merges the Stack from the bottom up. */
+export function stackedOnLine(base: StackedOnBaseIssue): string {
+  return `> ${stackedOnText(base, true)}`;
 }
 
 /**
- * The deterministic Pull Request body: for a Stacked Issue, a line naming its blocker; then Evidence (the passing Gate output), then the host's sections. It is the
+ * The deterministic Pull Request body: for a Stacked Issue, a line naming its Base Issue; then Evidence (the passing Gate output), then the host's sections. It is the
  * fallback when the body writer wrote nothing; `note` then says why, at the top. Empty sections are left out.
  */
 export function buildPullRequestBody({ gateOutput, findings, usage, stackedOn }: PullRequestBodyInput, note?: string): string {
@@ -60,7 +60,7 @@ export function buildPullRequestBody({ gateOutput, findings, usage, stackedOn }:
   ]);
 }
 
-/** For a Stacked Issue, a line naming its blocker; then the body writer's Summary, Evidence and Merge Danger, followed by the host's sections. */
+/** For a Stacked Issue, a line naming its Base Issue; then the body writer's Summary, Evidence and Merge Danger, followed by the host's sections. */
 export function buildWrittenPullRequestBody(written: string, { findings, usage, stackedOn }: PullRequestBodyInput): string {
   return join([
     stackedOn === undefined ? undefined : stackedOnLine(stackedOn),

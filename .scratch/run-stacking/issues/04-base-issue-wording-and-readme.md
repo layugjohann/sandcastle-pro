@@ -1,6 +1,6 @@
 # 04: "Base Issue" wording and README
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/33
 Blocked by: 02
 

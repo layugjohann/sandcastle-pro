@@ -1,6 +1,7 @@
 # 03: An Issue whose recorded Base Issue is no longer the top goes to ready-for-human
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/32
 Blocked by: 02
 
 Spec: `.scratch/run-stacking/spec.md` (stories 20–23), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -29,3 +30,5 @@ Usage: Implementer 42 input, 11,118 output, 76,325 cache creation, 878,187 cache
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-03-2026-11-17T08-46-16-801Z.log`).
 
 Usage: Body writer 2 input, 1,234 output, 24,186 cache creation, 11,457 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/32

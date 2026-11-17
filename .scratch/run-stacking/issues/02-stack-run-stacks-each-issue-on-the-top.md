@@ -1,6 +1,7 @@
 # 02: "stack": "run" stacks each Issue on the top of the Stack
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/31
 Blocked by: 01
 
 Spec: `.scratch/run-stacking/spec.md` (stories 1–19, 24–29, 31–32), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -37,3 +38,5 @@ Usage: Implementer 48 input, 21,980 output, 86,365 cache creation, 1,600,652 cac
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-02-2026-11-17T08-31-21-118Z.log`).
 
 Usage: Body writer 2 input, 1,299 output, 34,477 cache creation, 11,457 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/31

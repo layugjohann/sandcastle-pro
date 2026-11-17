@@ -1,6 +1,7 @@
 # 04: "Base Issue" wording and README
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/33
 Blocked by: 02
 
 Spec: `.scratch/run-stacking/spec.md` (stories 30, 39–42), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -26,3 +27,5 @@ Usage: Implementer 28 input, 7,653 output, 43,039 cache creation, 582,316 cache 
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-04-2026-11-17T08-56-12-395Z.log`).
 
 Usage: Body writer 2 input, 1,202 output, 32,716 cache creation, 11,457 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/33

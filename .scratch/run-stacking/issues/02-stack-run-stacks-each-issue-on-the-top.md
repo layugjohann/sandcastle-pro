@@ -1,6 +1,6 @@
 # 02: "stack": "run" stacks each Issue on the top of the Stack
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 01
 
 Spec: `.scratch/run-stacking/spec.md` (stories 1–19, 24–29, 31–32), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -24,3 +24,16 @@ Spec: `.scratch/run-stacking/spec.md` (stories 1–19, 24–29, 31–32), ADR `d
 - [x] Tested at the `loadConfig` seam: `"run"` is accepted, `"run"` without `pullRequest` is rejected, and an unknown value is rejected.
 
 ## Comments
+
+Usage: Implementer 48 input, 21,980 output, 86,365 cache creation, 1,600,652 cache read; Review Session 8 input, 3,924 output, 40,900 cache creation, 151,552 cache read.
+
+**Review Session: Non-critical Findings**
+
+- In "run" mode, `next()` calls `readiness()` once for each ready-for-agent Issue, and each call rebuilds `stackState(all)` from scratch. Computing the Stack state once per `next()` call, as `blockedInRunMode` does, would be simpler and avoid repeating the work.
+- test/config.test.ts: the new `it.each` repeats cases the rejection table already covers ("run" without pullRequest, and an unknown string value). Only the numeric `stack: 1` case is new.
+- When the Stack is ambiguous with zero tops (every awaiting-merge Issue has an in-progress or paused Issue stacked on it), `StackState` labels it 'ambiguous' and `BlockedIssue.tops` is an empty array. Callers must check `tops.length` to tell 'no top' from 'several tops'. A separate kind or field would say this more clearly.
+- The doc comment on `Issue.stackedOn` still says "The blocker branch", but in "run" mode it is the Base Issue's branch, which may not be a blocker. The wording pass is planned in Issue 04, but this comment is already wrong after this change.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-02-2026-11-17T08-31-21-118Z.log`).
+
+Usage: Body writer 2 input, 1,299 output, 34,477 cache creation, 11,457 cache read.

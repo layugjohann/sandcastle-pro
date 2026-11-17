@@ -1,6 +1,6 @@
 # 04: "Base Issue" wording and README
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 02
 
 Spec: `.scratch/run-stacking/spec.md` (stories 30, 39–42), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -14,3 +14,15 @@ Spec: `.scratch/run-stacking/spec.md` (stories 30, 39–42), ADR `docs/adr/0005-
 - [x] Tests that assert on the changed wording are updated, and `npm run check` passes.
 
 ## Comments
+
+Usage: Implementer 28 input, 7,653 output, 43,039 cache creation, 582,316 cache read; Review Session 8 input, 1,793 output, 34,623 cache creation, 140,209 cache read.
+
+**Review Session: Non-critical Findings**
+
+- README 'Picks Issues' step (line 88) still says a Run picks the lowest-numbered ready-for-agent Issue 'whose blockers are done', which is incomplete under "stack": true / "run" (awaiting-merge blockers can be satisfied) and now contradicts the new Stacking section. Pre-existing text, not touched by the diff.
+- test/stacked-issues.test.ts keeps the constant name BLOCKER_LINE and the test title 'starts a Stacked Issue's plain body with the blocker line' although the line now names the Base Issue; the names no longer match the domain wording.
+- README.md now ends with an extra trailing blank line after the Stacking section.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-04-2026-11-17T08-56-12-395Z.log`).
+
+Usage: Body writer 2 input, 1,202 output, 32,716 cache creation, 11,457 cache read.

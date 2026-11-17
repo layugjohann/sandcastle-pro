@@ -77,7 +77,9 @@ describe("Project config", () => {
     ["misspelt key", `{"gate": ["true"], "modle": "x"}`, /unknown key "modle"/],
     ["unknown sandbox", `{"gate": ["true"], "sandbox": "vm"}`, /"sandbox" must be one of native, docker, got "vm"/],
     ["pullRequest not a boolean", `{"gate": ["true"], "pullRequest": "yes"}`, /"pullRequest" must be true or false, got "yes"/],
-    ["stack not a boolean", `{"gate": ["true"], "pullRequest": true, "stack": "yes"}`, /"stack" must be true or false, got "yes"/],
+    ["unknown stack value", `{"gate": ["true"], "pullRequest": true, "stack": "yes"}`, /"stack" must be false, true or "run", got "yes"/],
+    ["run stack without Pull Requests", `{"gate": ["true"], "stack": "run"}`, /"stack": "run", which needs "pullRequest": true/],
+    ["run stack with pullRequest off", `{"gate": ["true"], "pullRequest": false, "stack": "run"}`, /"stack": "run", which needs "pullRequest": true/],
     ["stack without Pull Requests", `{"gate": ["true"], "stack": true}`, /"stack": true, which needs "pullRequest": true/],
     ["stack with pullRequest off", `{"gate": ["true"], "pullRequest": false, "stack": true}`, /"stack": true, which needs "pullRequest": true/],
     ["misspelt pullRequest", `{"gate": ["true"], "pullRequests": true}`, /unknown key "pullRequests"/],
@@ -122,6 +124,18 @@ describe("Project config", () => {
 
     repo.write(CONFIG, JSON.stringify({ gate: ["true"], stack: false }));
     expect((await loadConfig(repo.dir)).stack).toBe(false);
+
+    repo.write(CONFIG, JSON.stringify({ gate: ["true"], pullRequest: true, stack: "run" }));
+    expect((await loadConfig(repo.dir)).stack).toBe("run");
+  });
+
+  it.each([
+    [`{"gate": ["true"], "stack": "run"}`, /"stack": "run", which needs "pullRequest": true\. Turn on "pullRequest", or turn off "stack"\./],
+    [`{"gate": ["true"], "pullRequest": true, "stack": "always"}`, /"stack" must be false, true or "run", got "always"\./],
+    [`{"gate": ["true"], "pullRequest": true, "stack": 1}`, /"stack" must be false, true or "run", got 1\./],
+  ])("rejects the stack setting in %s", async (text, problem) => {
+    repo.write(CONFIG, text);
+    await expect(loadConfig(repo.dir)).rejects.toThrow(problem);
   });
 
   it("gives the body writer Sonnet at low effort unless the config overrides either", async () => {

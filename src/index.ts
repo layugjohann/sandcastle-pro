@@ -6,10 +6,10 @@ export {
   type CodingStandardsLayerName,
 } from "./coding-standards.js";
 export { ENV_FILE, resolveAuth, type Auth } from "./auth.js";
-export { CONFIG_FILE, DEFAULT_CONFIG, loadConfig, SANDBOXES, type Config, type SandboxChoice } from "./config.js";
+export { CONFIG_FILE, DEFAULT_CONFIG, loadConfig, SANDBOXES, STACK_MODES, type Config, type SandboxChoice, type StackMode } from "./config.js";
 export { AgentCallError, type Agent, type AgentCall, type AgentResult, type Effort, type Finding, type Review, type PausableStage, type Severity, type Stage, type TokenUsage } from "./agent.js";
 export { runGate, type GateResult } from "./gate.js";
-export { createIssueStore, STATUSES, type BlockedIssue, type Issue, type IssueStore, type Status } from "./issue-store.js";
+export { createIssueStore, STATUSES, type BlockedIssue, type Issue, type IssueStore, type StackTop, type Status } from "./issue-store.js";
 export { runWorkflow, type BodyWriterResult, type IssueResult, type PublishResult, type RunOptions, type RunResult } from "./run-workflow.js";
 export { createGitHubPublisher, type Publisher, type PullRequestRequest, type PullRequestState, type PullRequestStatus } from "./publisher.js";
 export { buildPullRequestBody, buildWrittenPullRequestBody, type PullRequestBodyInput, type StackedOnBlocker } from "./pull-request-body.js";

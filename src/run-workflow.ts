@@ -8,7 +8,7 @@ import { AgentCallError, STAGE_NAMES, type AgentCall, type AgentResult, type Age
 import { loadCodingStandards } from "./coding-standards.js";
 import { loadConfig, type Config } from "./config.js";
 import { runGate, withoutNpmExecPath, type GateResult } from "./gate.js";
-import { baseOf, createIssueStore, mergeIssueFile, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
+import { baseOf, createIssueStore, mergeIssueFile, type BlockedIssue, type Issue, type IssueStore, type PausedAt } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 import { buildBodyWriterPrompt, buildImplementerPrompt, buildResumePrompt, buildReviewPrompt } from "./prompt.js";
 import { createGitHubPublisher, type Publisher } from "./publisher.js";
@@ -115,13 +115,7 @@ async function runIssues(issues: IssueResult[], count: number, context: IssueCon
     const issue = await store.next();
     if (!issue) {
       const progress = issues.length === 0 ? "Nothing to do." : `Processed ${issues.length} of ${count}.`;
-      const blocked = (await store.blocked()).map((b) => {
-        const line = `Issue ${b.id} is blocked by ${b.blockers.join(", ")}.`;
-        return b.tooManyToStack
-          ? `${line} It has ${b.blockers.length} unmerged blockers, and a Stacked Issue can have only one.`
-          : line;
-      });
-      log([`No Issue is ready for an agent. ${progress}`, ...blocked].join("\n"));
+      log([`No Issue is ready for an agent. ${progress}`, ...blockedLines(await store.blocked())].join("\n"));
       break;
     }
     const result = await runIssue(issue, context);
@@ -140,6 +134,31 @@ async function runIssues(issues: IssueResult[], count: number, context: IssueCon
       break;
     }
   }
+}
+
+/** Why each skipped Issue can't start, with the tops of the Stack named once when the Run can't pick one. */
+function blockedLines(blocked: readonly BlockedIssue[]): string[] {
+  const lines: string[] = [];
+  const tops = blocked.find((b) => b.tops !== undefined)?.tops;
+  if (tops !== undefined) {
+    const named = tops.map((t) => `Issue ${t.id} (\`${t.branch}\`${t.pullRequest === undefined ? "" : `, ${t.pullRequest}`})`);
+    lines.push(
+      tops.length > 0
+        ? `The Stack has ${tops.length} tops, so the Run can't tell which to build on: ${named.join(", ")}. Merge or close Pull Requests until one Stack remains.`
+        : "The Stack has no top: every awaiting-merge Issue has an in-progress or paused Issue stacked on it. Finish or reset that Issue so the Run can find the top.",
+    );
+  }
+  for (const b of blocked) {
+    if (b.blockers.length === 0) continue;
+    let line = `Issue ${b.id} is blocked by ${b.blockers.join(", ")}.`;
+    if (b.tooManyToStack) line += ` It has ${b.blockers.length} unmerged blockers, and a Stacked Issue can have only one.`;
+    if (b.outsideStack !== undefined) {
+      const which = b.outsideStack.length === 1 ? `Blocker ${b.outsideStack[0]} is` : `Blockers ${b.outsideStack.join(", ")} are`;
+      line += ` ${which} awaiting-merge but not in the Stack below the top, so Issue ${b.id}'s base would not have that work.`;
+    }
+    lines.push(line);
+  }
+  return lines;
 }
 
 type IssueContext = Omit<RunOptions, "config" | "count" | "log" | "store" | "targetBranch" | "publisher"> & {

@@ -11,6 +11,14 @@ export const SANDBOXES = ["native", "docker"] as const;
 
 export type SandboxChoice = (typeof SANDBOXES)[number];
 
+/**
+ * How Issues stack: `false` never, `true` on a sole unmerged `awaiting-merge` blocker, `"run"` every Issue on the top
+ * of the Stack.
+ */
+export const STACK_MODES = [false, true, "run"] as const;
+
+export type StackMode = (typeof STACK_MODES)[number];
+
 /** The Preset's project config, with every default filled in. */
 export interface Config {
   /** Gate commands, run in order in the Issue's branch. */
@@ -23,10 +31,11 @@ export interface Config {
   /** Publish each Issue that passes the Gate as a Pull Request. Off unless the project opts in. */
   pullRequest: boolean;
   /**
-   * Start an Issue whose one unmerged blocker is `awaiting-merge` as a Stacked Issue, on that blocker's branch.
-   * Off unless the project opts in; needs `pullRequest`.
+   * `true`: start an Issue whose one unmerged blocker is `awaiting-merge` as a Stacked Issue, on that blocker's branch.
+   * `"run"`: start every Issue as a Stacked Issue on the top of the Stack, or on the target branch when nothing is
+   * `awaiting-merge`. Off unless the project opts in; both need `pullRequest`.
    */
-  stack: boolean;
+  stack: StackMode;
   /** The agent that writes a Pull Request's body, when `pullRequest` is on. An Issue's `Model:` line does not apply. */
   bodyWriter: { model: string; effort: Effort };
 }
@@ -82,12 +91,12 @@ function parseConfig(text: string): Config {
   if (pullRequest !== undefined && typeof pullRequest !== "boolean") {
     throw configError(`"pullRequest" must be true or false, got ${JSON.stringify(pullRequest)}.`);
   }
-  if (stack !== undefined && typeof stack !== "boolean") {
-    throw configError(`"stack" must be true or false, got ${JSON.stringify(stack)}.`);
+  if (stack !== undefined && !STACK_MODES.includes(stack as StackMode)) {
+    throw configError(`"stack" must be false, true or "run", got ${JSON.stringify(stack)}.`);
   }
-  if (stack === true && pullRequest !== true) {
-    // A Stacked Issue's base is its blocker's Pull Request branch; without Pull Requests the human would merge local branches in order by hand.
-    throw configError(`has "stack": true, which needs "pullRequest": true. Turn on "pullRequest", or turn off "stack".`);
+  if (stack !== undefined && stack !== false && pullRequest !== true) {
+    // A Stacked Issue's base is its Base Issue's Pull Request branch; without Pull Requests the human would merge local branches in order by hand.
+    throw configError(`has "stack": ${JSON.stringify(stack)}, which needs "pullRequest": true. Turn on "pullRequest", or turn off "stack".`);
   }
   if (maxIterations !== undefined && !isObject(maxIterations)) {
     throw configError(`"maxIterations" must be an object, got ${JSON.stringify(maxIterations)}.`);
@@ -107,7 +116,7 @@ function parseConfig(text: string): Config {
     maxIterations: { ...DEFAULT_CONFIG.maxIterations, ...(limits as Partial<Config["maxIterations"]>) },
     sandbox: (sandbox as SandboxChoice | undefined) ?? DEFAULT_CONFIG.sandbox,
     pullRequest: (pullRequest as boolean | undefined) ?? DEFAULT_CONFIG.pullRequest,
-    stack: (stack as boolean | undefined) ?? DEFAULT_CONFIG.stack,
+    stack: (stack as StackMode | undefined) ?? DEFAULT_CONFIG.stack,
     bodyWriter: { ...DEFAULT_CONFIG.bodyWriter, ...(writer as Partial<Config["bodyWriter"]>) },
   };
 }

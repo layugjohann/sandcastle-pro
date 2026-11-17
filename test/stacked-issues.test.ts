@@ -831,3 +831,236 @@ describe("A closed Pull Request in a three-Issue Stack", () => {
     expect(commentsOf(C)).toContain(`Issue 01's Pull Request ${PR_A} was closed without being merged.`);
   });
 });
+
+describe('Run stacking with "stack": "run"', () => {
+  let repo: TempRepo;
+  let origin: string;
+  let output: string[];
+  const log = (line: string) => output.push(line);
+  const runConfig = (gate = ["true"]): Config => ({ ...configWithGate(gate), pullRequest: true, stack: "run" });
+  const path = (file: string) => (file.includes("/") ? file : `${ISSUES}/${file}.md`);
+  const statusOf = (file: string) => /^Status:\s*(\S+)/m.exec(repo.read(path(file)))?.[1];
+  const headerOf = (file: string) => repo.read(path(file)).split(/^## Comments$/m)[0]!;
+  const write = (file: string, status: string, extra = "Do it.") => repo.write(path(file), issueFile({ title: file, status, extra }));
+
+  /** A fake agent whose Implementer commits `<slug>.txt` holding `<slug>-MARKER` on each Issue's branch. */
+  function markerAgent(): FakeAgent {
+    const calls: AgentCall[] = [];
+    return {
+      calls,
+      run(call) {
+        calls.push(call);
+        const slug = call.branch.replace(/^issue\//, "");
+        return fakeAgent(repo.dir, { files: { [`${slug}.txt`]: `${slug}-MARKER\n` } }).run(call);
+      },
+    };
+  }
+
+  /** Commits a branch for `slug` holding its marker, cut from `from`, and returns to main. */
+  function branchWithWork(slug: string, from = "main"): void {
+    git(repo.dir, "checkout", "-q", "-b", `issue/${slug}`, from);
+    repo.write(`${slug}.txt`, `${slug}-MARKER\n`);
+    repo.commitAll(`${slug}'s work`);
+    git(repo.dir, "checkout", "-q", "main");
+  }
+
+  function commitAndPush(): void {
+    repo.commitAll("add issues");
+    git(repo.dir, "push", "-q", "-u", "origin", "main");
+  }
+
+  beforeEach(() => {
+    repo = createTempRepo();
+    output = [];
+    origin = mkdtempSync(join(tmpdir(), "sandcastle-pro-origin-"));
+    git(origin, "init", "-q", "--bare", "-b", "main");
+    git(repo.dir, "remote", "add", "origin", origin);
+    repo.write(".scratch/feature/spec.md", "# Spec: feature\n\nSpec body.\n");
+  });
+  afterEach(() => {
+    repo.cleanup();
+    rmSync(origin, { recursive: true, force: true });
+  });
+
+  it("stacks three Issues that don't block each other into one Stack in a --count 3 Run", async () => {
+    write("01-first", "ready-for-agent");
+    write("02-second", "ready-for-agent");
+    write("03-third", "ready-for-agent");
+    commitAndPush();
+    const agent = markerAgent();
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+    // The Gate passes only when every Issue below the current one is in its branch.
+    const gate = [
+      'test -f 02-second.txt || test "$(git branch --show-current)" != issue/03-third',
+      'test -f 01-first.txt || test "$(git branch --show-current)" = issue/01-first',
+    ];
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: runConfig(gate), count: 3, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["01", "awaiting-merge"],
+      ["02", "awaiting-merge"],
+      ["03", "awaiting-merge"],
+    ]);
+    git(repo.dir, "merge-base", "--is-ancestor", "issue/01-first", "issue/02-second");
+    git(repo.dir, "merge-base", "--is-ancestor", "issue/02-second", "issue/03-third");
+    expect(git(repo.dir, "show", "issue/03-third:01-first.txt")).toBe("01-first-MARKER");
+    expect(git(repo.dir, "show", "issue/03-third:02-second.txt")).toBe("02-second-MARKER");
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([
+      ["issue/01-first", "main"],
+      ["issue/02-second", "issue/01-first"],
+      ["issue/03-third", "issue/02-second"],
+    ]);
+    const reviewOf = (branch: string) => agent.calls.find((c) => c.stage === "review-session" && c.branch === branch)!.prompt;
+    expect(reviewOf("issue/02-second")).toContain("+02-second-MARKER");
+    expect(reviewOf("issue/02-second")).not.toContain("01-first-MARKER");
+    expect(reviewOf("issue/03-third")).toContain("+03-third-MARKER");
+    expect(reviewOf("issue/03-third")).not.toContain("02-second-MARKER");
+    expect(reviewOf("issue/03-third")).not.toContain("01-first-MARKER");
+
+    expect(headerOf("01-first")).not.toContain("Stacked on:");
+    expect(headerOf("02-second")).toMatch(/^Stacked on: issue\/01-first$/m);
+    expect(headerOf("03-third")).toMatch(/^Stacked on: issue\/02-second$/m);
+    const third = publisher.published[2]!.body;
+    expect(third).toContain(
+      "this Pull Request targets `issue/02-second`, the branch of https://github.com/owner/repo/pull/2. Merge that Pull Request first.",
+    );
+    expect(third).not.toMatch(/\b\d+ of \d+\b/);
+    expect(output.join("\n")).toContain("Starting Issue 03 on issue/03-third stacked on issue/02-second");
+  });
+
+  it("starts a new Run on the unmerged Issue an earlier Run left, across features", async () => {
+    write("01-first", "ready-for-agent");
+    repo.write(".scratch/other/spec.md", "# Spec: other\n\nSpec body.\n");
+    write(".scratch/other/issues/05-other.md", "ready-for-agent");
+    commitAndPush();
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: runConfig(), count: 1, log });
+    expect(statusOf("01-first")).toBe("awaiting-merge");
+    const second = await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: runConfig(), count: 1, log });
+
+    expect(second.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["05", "awaiting-merge"]]);
+    git(repo.dir, "merge-base", "--is-ancestor", "issue/01-first", "issue/05-other");
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([
+      ["issue/01-first", "main"],
+      ["issue/05-other", "issue/01-first"],
+    ]);
+    expect(headerOf(".scratch/other/issues/05-other.md")).toMatch(/^Stacked on: issue\/01-first$/m);
+  });
+
+  it("starts the next Issue from the target branch once everything is merged", async () => {
+    write("01-first", "ready-for-agent");
+    write("02-second", "ready-for-agent");
+    commitAndPush();
+    await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher: fakePublisher({ pushFrom: repo.dir }), config: runConfig(), count: 1, log });
+    mergeOnOrigin(origin, "main", "issue/01-first");
+    const publisher = fakePublisher({ pushFrom: repo.dir, states: { "https://github.com/owner/repo/pull/1": "MERGED" } });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: runConfig(), count: 1, log });
+
+    expect(statusOf("01-first")).toBe("done");
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["02", "awaiting-merge"]]);
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([["issue/02-second", "main"]]);
+    expect(headerOf("02-second")).not.toContain("Stacked on:");
+    expect(output.join("\n")).toContain("Starting Issue 02 on issue/02-second\n");
+  });
+
+  it("picks nothing when the Stack has two tops, and names both", async () => {
+    write("01-first", "awaiting-merge", "Pull Request: https://github.com/owner/repo/pull/1\n\nDo it.");
+    write("02-second", "awaiting-merge", "Pull Request: https://github.com/owner/repo/pull/2\n\nDo it.");
+    write("03-third", "ready-for-agent");
+    commitAndPush();
+    const agent = markerAgent();
+    const publisher = fakePublisher({
+      states: { "https://github.com/owner/repo/pull/1": "OPEN", "https://github.com/owner/repo/pull/2": "OPEN" },
+    });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: runConfig(), count: 3, log });
+
+    expect(result.issues).toEqual([]);
+    expect(agent.calls).toHaveLength(0);
+    expect(statusOf("03-third")).toBe("ready-for-agent");
+    expect(headerOf("03-third")).not.toContain("Stacked on:");
+    expect(git(repo.dir, "branch", "--list", "issue/03-third")).toBe("");
+    expect(output.join("\n")).toContain(
+      "The Stack has 2 tops, so the Run can't tell which to build on: Issue 01 (`issue/01-first`, https://github.com/owner/repo/pull/1), Issue 02 (`issue/02-second`, https://github.com/owner/repo/pull/2). Merge or close Pull Requests until one Stack remains.",
+    );
+  });
+
+  it("starts an Issue whose two awaiting-merge blockers are both in the Stack, on the top", async () => {
+    branchWithWork("01-first");
+    branchWithWork("02-second", "issue/01-first");
+    write("01-first", "awaiting-merge");
+    write("02-second", "awaiting-merge", "Stacked on: issue/01-first\n\nDo it.");
+    write("03-third", "ready-for-agent", "Blocked by: 01, 02\n\nDo it.");
+    commitAndPush();
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: runConfig(), count: 1, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["03", "awaiting-merge"]]);
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([["issue/03-third", "issue/02-second"]]);
+    expect(git(repo.dir, "show", "issue/03-third:01-first.txt")).toBe("01-first-MARKER");
+  });
+
+  it("makes an Issue wait when an awaiting-merge blocker is outside the Stack, naming it", async () => {
+    // 01 is built on by a leftover in-progress Issue, so the top is 03 and 01 is not below it.
+    branchWithWork("01-first");
+    branchWithWork("03-third");
+    write("01-first", "awaiting-merge");
+    write("02-second", "in-progress", "Stacked on: issue/01-first\n\nDo it.");
+    write("03-third", "awaiting-merge");
+    write("04-fourth", "ready-for-agent", "Blocked by: 01\n\nDo it.");
+    commitAndPush();
+    const agent = markerAgent();
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher: fakePublisher(), config: runConfig(), count: 1, log });
+
+    expect(result.issues).toEqual([]);
+    expect(agent.calls).toHaveLength(0);
+    expect(statusOf("04-fourth")).toBe("ready-for-agent");
+    expect(output.join("\n")).toContain(
+      "Issue 04 is blocked by 01. Blocker 01 is awaiting-merge but not in the Stack below the top, so Issue 04's base would not have that work.",
+    );
+  });
+
+  it("keeps an Issue whose blocker has not passed the Gate waiting", async () => {
+    write("01-first", "ready-for-human");
+    write("02-second", "ready-for-agent", "Blocked by: 01\n\nDo it.");
+    commitAndPush();
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher: fakePublisher(), config: runConfig(), count: 1, log });
+
+    expect(result.issues).toEqual([]);
+    const printed = output.join("\n");
+    expect(printed).toContain("Issue 02 is blocked by 01.");
+    expect(printed).not.toContain("not in the Stack");
+  });
+
+  it("stacks the next Run on the Issue below one that failed the Gate", async () => {
+    write("01-first", "ready-for-agent");
+    write("02-second", "ready-for-agent");
+    write("03-third", "ready-for-agent");
+    commitAndPush();
+    const failSecond = runConfig(['test "$(git branch --show-current)" != issue/02-second']);
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+
+    const first = await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: failSecond, count: 3, log });
+    expect(first.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["01", "awaiting-merge"],
+      ["02", "gate-failed"],
+    ]);
+    expect(statusOf("02-second")).toBe("ready-for-human");
+    const second = await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: runConfig(), count: 1, log });
+
+    expect(second.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["03", "awaiting-merge"]]);
+    expect(headerOf("03-third")).toMatch(/^Stacked on: issue\/01-first$/m);
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([
+      ["issue/01-first", "main"],
+      ["issue/03-third", "issue/01-first"],
+    ]);
+    expect(git(repo.dir, "show", "issue/03-third:01-first.txt")).toBe("01-first-MARKER");
+    expect(() => git(repo.dir, "show", "issue/03-third:02-second.txt")).toThrow();
+  });
+});

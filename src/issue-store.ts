@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { STAGE_NAMES, type PausableStage } from "./agent.js";
+import type { StackMode } from "./config.js";
 
 export const STATUSES = [
   "needs-triage",
@@ -41,8 +42,9 @@ export interface Issue {
   /** The blocker branch on the Issue's `Stacked on:` line, which a Run writes when it starts a Stacked Issue. */
   stackedOn: string | undefined;
   /**
-   * The branch of the one unmerged, `awaiting-merge` blocker `next()` picked this Issue on top of, when stacking is
-   * on and the Issue has no `Stacked on:` line yet. The Run records it with `recordStackedOn()`.
+   * The branch of the Base Issue `next()` picked this Issue on top of, when stacking is on and the Issue has no
+   * `Stacked on:` line yet: the one unmerged, `awaiting-merge` blocker with `"stack": true`, the top of the Stack with
+   * `"stack": "run"`. The Run records it with `recordStackedOn()`.
    */
   stackOn: string | undefined;
 }
@@ -54,10 +56,12 @@ export function baseOf(issue: Pick<Issue, "stackedOn" | "stackOn">, target: stri
 
 export interface IssueStoreOptions {
   /**
-   * Treat a blocker as satisfied when it is the Issue's only unsatisfied blocker and is `awaiting-merge`, so the Issue
-   * can start as a Stacked Issue. Off by default, when only `done` blockers are satisfied.
+   * `true`: treat a blocker as satisfied when it is the Issue's only unsatisfied blocker and is `awaiting-merge`, so the
+   * Issue can start as a Stacked Issue. `"run"`: stack every Issue on the top of the Stack, and treat an
+   * `awaiting-merge` blocker in the Stack below the top as satisfied. Off by default, when only `done` blockers are
+   * satisfied.
    */
-  stack?: boolean;
+  stack?: StackMode;
 }
 
 export interface PausedAt {
@@ -74,17 +78,35 @@ export interface BlockedIssue {
    * them is `awaiting-merge`: a Stacked Issue builds on exactly one blocker's branch.
    */
   tooManyToStack?: true;
+  /** With `"stack": "run"`, its `awaiting-merge` blockers that are not in the Stack below the top. */
+  outsideStack?: string[];
+  /**
+   * With `"stack": "run"`, set when the Run can't tell which Issue to build on: the two or more tops of the Stack, or
+   * none when every `awaiting-merge` Issue has an `in-progress` or `paused` Issue stacked on it.
+   */
+  tops?: StackTop[];
+}
+
+/** An `awaiting-merge` Issue that no `awaiting-merge`, `in-progress` or `paused` Issue is stacked on. */
+export interface StackTop {
+  id: string;
+  branch: string;
+  /** Its Pull Request URL, when one is recorded. */
+  pullRequest: string | undefined;
 }
 
 export interface IssueStore {
   /**
    * The next Issue a Run should work on: the lowest-numbered `paused` one, else the lowest-numbered unblocked
-   * `ready-for-agent` one, else null. With stacking on, a sole `awaiting-merge` blocker does not block.
+   * `ready-for-agent` one, else null. With `"stack": true`, a sole `awaiting-merge` blocker does not block. With
+   * `"stack": "run"`, the Issue is stacked on the top of the Stack, `awaiting-merge` blockers in the Stack below the top
+   * do not block, and nothing but a `paused` Issue is returned while the Stack has two or more tops.
    */
   next(): Promise<Issue | null>;
   /**
    * The `ready-for-agent` Issues that `next()` skips, each with its blockers that are not `done`, and with
-   * `tooManyToStack` when stacking is on and two or more of those blockers are unmerged.
+   * `tooManyToStack` when `"stack": true` and two or more of those blockers are unmerged. With `"stack": "run"`, each
+   * also has its `awaiting-merge` blockers outside the Stack, or the tops of the Stack when the Run can't pick one.
    */
   blocked(): Promise<BlockedIssue[]>;
   /** Every Issue in `awaiting-merge`, whose branch the human may have merged. */
@@ -218,6 +240,38 @@ function findBlocker(file: IssueFile, blocker: string, all: readonly IssueFile[]
   return all.find((f) => f.number === Number(blocker) && dirname(f.path) === dirname(file.path));
 }
 
+/** Statuses of an Issue whose `Stacked on:` line counts as building on its Base Issue. */
+const BUILDS_ON_BASE = new Set<Status | undefined>(["awaiting-merge", "in-progress", "paused"]);
+
+/** The Stack as `"stack": "run"` sees it, from the Issue files alone. */
+type StackState =
+  /** Nothing is `awaiting-merge`: an Issue starts from the target branch. */
+  | { kind: "empty" }
+  /** `below` holds the paths of the top and every Issue below it, following `Stacked on:` lines down. */
+  | { kind: "one"; top: IssueFile; below: ReadonlySet<string> }
+  /** Two or more tops, or none while Issues are `awaiting-merge`: no Issue can start. */
+  | { kind: "ambiguous"; tops: IssueFile[] };
+
+function stackState(all: readonly IssueFile[]): StackState {
+  const awaiting = all.filter((f) => f.status === "awaiting-merge");
+  if (awaiting.length === 0) return { kind: "empty" };
+  const builtOn = new Set(all.filter((f) => BUILDS_ON_BASE.has(f.status)).map((f) => parseStackedOn(f.text)));
+  const tops = awaiting.filter((f) => !builtOn.has(branchOf(f.path)));
+  if (tops.length !== 1) return { kind: "ambiguous", tops };
+  const top = tops[0]!;
+  const below = new Set<string>();
+  for (let file: IssueFile | undefined = top; file && !below.has(file.path); ) {
+    below.add(file.path);
+    const base = parseStackedOn(file.text);
+    file = base === undefined ? undefined : all.find((f) => branchOf(f.path) === base);
+  }
+  return { kind: "one", top, below };
+}
+
+function toStackTop(file: IssueFile): StackTop {
+  return { id: file.id, branch: branchOf(file.path), pullRequest: parsePullRequest(file.text) };
+}
+
 /** `file`'s blockers that are not `done`. Blockers resolve within the same issues directory. */
 function unfinishedBlockers(file: IssueFile, all: readonly IssueFile[]): string[] {
   return file.blockedBy.filter((blocker) => findBlocker(file, blocker, all)?.status !== "done");
@@ -227,13 +281,53 @@ function unfinishedBlockers(file: IssueFile, all: readonly IssueFile[]): string[
  * Whether `file` can start now. Without stacking, every blocker must be `done`. With it, the one unfinished blocker
  * may be `awaiting-merge`, and its branch is returned as `stackOn`.
  */
-function readiness(file: IssueFile, all: readonly IssueFile[], stack: boolean): { ready: boolean; stackOn?: string } {
+function readiness(file: IssueFile, all: readonly IssueFile[], stack: StackMode): { ready: boolean; stackOn?: string } {
+  if (stack === "run") return runReadiness(file, all, stackState(all));
   const unfinished = unfinishedBlockers(file, all);
   if (unfinished.length === 0) return { ready: true };
   if (!stack || unfinished.length > 1) return { ready: false };
   const blocker = findBlocker(file, unfinished[0]!, all);
   if (blocker?.status !== "awaiting-merge") return { ready: false };
   return { ready: true, stackOn: branchOf(blocker.path) };
+}
+
+/**
+ * Whether `file` can start now with `"stack": "run"`: the Stack has at most one top, and every blocker is `done` or is
+ * `awaiting-merge` in the Stack below the top. Its base is the top's branch, or none when the Stack is empty.
+ */
+function runReadiness(file: IssueFile, all: readonly IssueFile[], state: StackState): { ready: boolean; stackOn?: string; outsideStack?: string[] } {
+  if (state.kind === "ambiguous") return { ready: false };
+  const unfinished = unfinishedBlockers(file, all);
+  const outsideStack: string[] = [];
+  let ready = true;
+  for (const blocker of unfinished) {
+    const blockerFile = findBlocker(file, blocker, all);
+    if (blockerFile?.status !== "awaiting-merge") ready = false;
+    else if (state.kind !== "one" || !state.below.has(blockerFile.path)) {
+      ready = false;
+      outsideStack.push(blocker);
+    }
+  }
+  if (!ready) return outsideStack.length > 0 ? { ready, outsideStack } : { ready };
+  return state.kind === "one" ? { ready, stackOn: branchOf(state.top.path) } : { ready };
+}
+
+/** The `ready-for-agent` Issues `next()` skips with `"stack": "run"`, and why. */
+function blockedInRunMode(files: readonly IssueFile[]): BlockedIssue[] {
+  const state = stackState(files);
+  const result: BlockedIssue[] = [];
+  for (const file of files) {
+    if (file.status !== "ready-for-agent") continue;
+    const blockers = unfinishedBlockers(file, files);
+    if (state.kind === "ambiguous") {
+      result.push({ id: file.id, blockers, tops: state.tops.map(toStackTop) });
+      continue;
+    }
+    const { ready, outsideStack } = runReadiness(file, files, state);
+    if (ready) continue;
+    result.push(outsideStack ? { id: file.id, blockers, outsideStack } : { id: file.id, blockers });
+  }
+  return result;
 }
 
 function branchOf(path: string): string {
@@ -315,6 +409,7 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
 
     async blocked() {
       const files = await readIssues();
+      if (stack === "run") return blockedInRunMode(files);
       return files
         .filter((f) => f.status === "ready-for-agent" && !readiness(f, files, stack).ready)
         .map((f): BlockedIssue => {

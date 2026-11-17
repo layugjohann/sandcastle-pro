@@ -47,6 +47,12 @@ export interface Issue {
    * `"stack": "run"`. The Run records it with `recordStackedOn()`.
    */
   stackOn: string | undefined;
+  /**
+   * With `"stack": "run"`, for a `ready-for-agent` Issue that already has a `Stacked on:` line: the current top of the
+   * Stack, or null when nothing is `awaiting-merge` and new Issues start from the target branch. The Run compares it to
+   * `stackedOn` before starting the Issue. Undefined otherwise, including for a `paused` Issue.
+   */
+  currentTop?: StackTop | null;
 }
 
 /** The branch an Issue's work is measured from and published against: its `Stacked on:` branch, else `target`. */
@@ -281,7 +287,7 @@ function unfinishedBlockers(file: IssueFile, all: readonly IssueFile[]): string[
  * Whether `file` can start now. Without stacking, every blocker must be `done`. With it, the one unfinished blocker
  * may be `awaiting-merge`, and its branch is returned as `stackOn`.
  */
-function readiness(file: IssueFile, all: readonly IssueFile[], stack: StackMode): { ready: boolean; stackOn?: string } {
+function readiness(file: IssueFile, all: readonly IssueFile[], stack: StackMode): { ready: boolean; stackOn?: string; top?: StackTop | null } {
   if (stack === "run") return runReadiness(file, all, stackState(all));
   const unfinished = unfinishedBlockers(file, all);
   if (unfinished.length === 0) return { ready: true };
@@ -295,7 +301,11 @@ function readiness(file: IssueFile, all: readonly IssueFile[], stack: StackMode)
  * Whether `file` can start now with `"stack": "run"`: the Stack has at most one top, and every blocker is `done` or is
  * `awaiting-merge` in the Stack below the top. Its base is the top's branch, or none when the Stack is empty.
  */
-function runReadiness(file: IssueFile, all: readonly IssueFile[], state: StackState): { ready: boolean; stackOn?: string; outsideStack?: string[] } {
+function runReadiness(
+  file: IssueFile,
+  all: readonly IssueFile[],
+  state: StackState,
+): { ready: boolean; stackOn?: string; outsideStack?: string[]; top?: StackTop | null } {
   if (state.kind === "ambiguous") return { ready: false };
   const unfinished = unfinishedBlockers(file, all);
   const outsideStack: string[] = [];
@@ -309,7 +319,7 @@ function runReadiness(file: IssueFile, all: readonly IssueFile[], state: StackSt
     }
   }
   if (!ready) return outsideStack.length > 0 ? { ready, outsideStack } : { ready };
-  return state.kind === "one" ? { ready, stackOn: branchOf(state.top.path) } : { ready };
+  return state.kind === "one" ? { ready, stackOn: branchOf(state.top.path), top: toStackTop(state.top) } : { ready, top: null };
 }
 
 /** The `ready-for-agent` Issues `next()` skips with `"stack": "run"`, and why. */
@@ -375,7 +385,7 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
     return files;
   }
 
-  async function toIssue(file: IssueFile, stackOn?: string): Promise<Issue> {
+  async function toIssue(file: IssueFile, stackOn?: string, top?: StackTop | null): Promise<Issue> {
     const slug = basename(file.path, ".md");
     const stackedOn = parseStackedOn(file.text);
     return {
@@ -391,6 +401,7 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
       pullRequest: parsePullRequest(file.text),
       stackedOn,
       stackOn: stackedOn === undefined ? stackOn : undefined,
+      ...(stackedOn !== undefined && top !== undefined ? { currentTop: top } : {}),
     };
   }
 
@@ -401,8 +412,8 @@ export function createIssueStore(repoDir: string, options: IssueStoreOptions = {
       if (paused) return toIssue(paused);
       for (const file of files) {
         if (file.status !== "ready-for-agent") continue;
-        const { ready, stackOn } = readiness(file, files, stack);
-        if (ready) return toIssue(file, stackOn);
+        const { ready, stackOn, top } = readiness(file, files, stack);
+        if (ready) return toIssue(file, stackOn, top);
       }
       return null;
     },

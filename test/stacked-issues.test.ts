@@ -1063,4 +1063,72 @@ describe('Run stacking with "stack": "run"', () => {
     expect(git(repo.dir, "show", "issue/03-third:01-first.txt")).toBe("01-first-MARKER");
     expect(() => git(repo.dir, "show", "issue/03-third:02-second.txt")).toThrow();
   });
+
+  /** Sets `file`'s status, as the human does, and commits it. */
+  function setStatus(file: string, status: string): void {
+    repo.write(path(file), repo.read(path(file)).replace(/^Status:.*$/m, `Status: ${status}`));
+    repo.commitAll(`${file} to ${status}`);
+  }
+
+  it("sends an Issue set back to ready-for-agent to ready-for-human when its Base Issue is no longer the top, and carries on", async () => {
+    write("01-first", "ready-for-agent");
+    write("02-second", "ready-for-agent");
+    write("03-third", "ready-for-agent");
+    write("04-fourth", "ready-for-agent");
+    commitAndPush();
+    const failSecond = runConfig(['test "$(git branch --show-current)" != issue/02-second']);
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+    await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: failSecond, count: 3, log });
+    expect(statusOf("02-second")).toBe("ready-for-human");
+    await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: runConfig(), count: 1, log });
+    expect(statusOf("03-third")).toBe("awaiting-merge");
+    setStatus("02-second", "ready-for-agent");
+    const before = git(repo.dir, "rev-parse", "issue/02-second");
+    const agent = markerAgent();
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent, publisher, config: runConfig(), count: 2, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([
+      ["02", "base-moved"],
+      ["04", "awaiting-merge"],
+    ]);
+    expect(statusOf("02-second")).toBe("ready-for-human");
+    expect(headerOf("02-second")).toMatch(/^Stacked on: issue\/01-first$/m);
+    expect(git(repo.dir, "rev-parse", "issue/02-second")).toBe(before);
+    expect(agent.calls.some((c) => c.branch === "issue/02-second")).toBe(false);
+    const comments = repo.read(path("02-second")).split(/^## Comments$/m)[1]!;
+    expect(comments).toContain(
+      "**Base Issue is no longer the top**: this Issue is stacked on Issue 01's branch `issue/01-first`, but the top of the Stack is now Issue 03 (`issue/03-third`, https://github.com/owner/repo/pull/2).",
+    );
+    expect(comments).toContain("rebase `issue/02-second` onto `issue/03-third` and change the `Stacked on:` line to `issue/03-third`");
+    expect(comments).toContain("delete `issue/02-second` and remove the `Stacked on:` line");
+    expect(output.join("\n")).toContain(
+      "Issue 02 is stacked on issue/01-first, but the top of the Stack is now issue/03-third, so it goes to ready-for-human.",
+    );
+    expect(headerOf("04-fourth")).toMatch(/^Stacked on: issue\/03-third$/m);
+    expect(publisher.published.at(-1)).toMatchObject({ branch: "issue/04-fourth", base: "issue/03-third" });
+  });
+
+  it("starts an Issue set back to ready-for-agent on its recorded Base Issue when that is still the top", async () => {
+    write("01-first", "ready-for-agent");
+    write("02-second", "ready-for-agent");
+    commitAndPush();
+    const failSecond = runConfig(['test "$(git branch --show-current)" != issue/02-second']);
+    const publisher = fakePublisher({ pushFrom: repo.dir });
+    await runWorkflow({ repoDir: repo.dir, agent: markerAgent(), publisher, config: failSecond, count: 2, log });
+    expect(statusOf("02-second")).toBe("ready-for-human");
+    setStatus("02-second", "ready-for-agent");
+    const retry = fakeAgent(repo.dir, { files: { "02-second-retry.txt": "retry\n" } });
+
+    const result = await runWorkflow({ repoDir: repo.dir, agent: retry, publisher, config: runConfig(), count: 1, log });
+
+    expect(result.issues.map((r) => [r.issue.id, r.outcome])).toEqual([["02", "awaiting-merge"]]);
+    expect(headerOf("02-second")).toMatch(/^Stacked on: issue\/01-first$/m);
+    expect(publisher.published.map((p) => [p.branch, p.base])).toEqual([
+      ["issue/01-first", "main"],
+      ["issue/02-second", "issue/01-first"],
+    ]);
+    git(repo.dir, "merge-base", "--is-ancestor", "issue/01-first", "issue/02-second");
+    expect(repo.read(path("02-second"))).not.toContain("no longer the top");
+  });
 });

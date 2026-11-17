@@ -68,7 +68,12 @@ export type IssueResult =
   | ({ outcome: "critical-unfixed"; unfixedCritical: Finding[] } & ReviewedIssue)
   | ({ outcome: "paused"; pausedAt: PausedAt } & IssueOutcomeDetails)
   /** A Stacked Issue whose `Stacked on:` branch is gone locally, so it went to `ready-for-human` without being worked on. */
-  | ({ outcome: "base-missing"; base: string } & IssueOutcomeDetails);
+  | ({ outcome: "base-missing"; base: string } & IssueOutcomeDetails)
+  /**
+   * With `"stack": "run"`, a `ready-for-agent` Issue whose `Stacked on:` branch is no longer the top of the Stack, so it
+   * went to `ready-for-human` without being worked on. `top` is the top's branch, or the target branch when the Stack is empty.
+   */
+  | ({ outcome: "base-moved"; base: string; top: string } & IssueOutcomeDetails);
 
 export interface RunResult {
   /** The Issues this Run processed, in order. Empty when none was ready. */
@@ -435,11 +440,41 @@ async function isMerged(repoDir: string, branch: string, target: string): Promis
   }
 }
 
+/**
+ * Sends a `ready-for-agent` Issue to `ready-for-human` when its recorded Base Issue is no longer the top of the Stack,
+ * since starting it there would make a second branch on that Base Issue and split the Stack. Returns undefined when the
+ * Issue may start: its Base Issue is still the top, it has no `Stacked on:` line, or it is paused.
+ */
+async function sendBackIfBaseMoved(issue: Issue, base: string, options: IssueContext): Promise<IssueResult | undefined> {
+  const { currentTop } = issue;
+  const { store, log, targetBranch } = options;
+  if (currentTop === undefined || issue.stackedOn === undefined) return undefined;
+  const top = currentTop?.branch ?? targetBranch;
+  if (base === top) return undefined;
+  const recorded = await store.byBranch(base);
+  const recordedText = recorded ? `Issue ${recorded.id}'s branch \`${base}\`` : `\`${base}\``;
+  const topText = currentTop
+    ? `the top of the Stack is now Issue ${currentTop.id} (\`${top}\`${currentTop.pullRequest ? `, ${currentTop.pullRequest}` : ""})`
+    : `nothing is awaiting merge, so the top of the Stack is now the target branch \`${top}\``;
+  const rebase = currentTop
+    ? `rebase \`${issue.branch}\` onto \`${top}\` and change the \`Stacked on:\` line to \`${top}\``
+    : `rebase \`${issue.branch}\` onto \`${top}\` and remove the \`Stacked on:\` line`;
+  await store.comment(
+    issue,
+    `**Base Issue is no longer the top**: this Issue is stacked on ${recordedText}, but ${topText}. Starting it on its recorded Base Issue would split the Stack in two, so the Run did not start it. Either ${rebase}, then set it back to ready-for-agent; or delete \`${issue.branch}\` and remove the \`Stacked on:\` line, then set it back to ready-for-agent so it restarts on the top of the Stack.`,
+  );
+  await store.transition(issue, "ready-for-human");
+  log(`Issue ${issue.id} is stacked on ${base}, but the top of the Stack is now ${top}, so it goes to ready-for-human.`);
+  return { outcome: "base-moved", issue, branch: issue.branch, base, top, usage: {} };
+}
+
 async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResult> {
   const { repoDir, log, store, config } = options;
   const { branch } = issue;
   // The branch this Issue's work is measured from and published against: its blocker's, for a Stacked Issue.
   const base = baseOf(issue, options.targetBranch);
+  const moved = await sendBackIfBaseMoved(issue, base, options);
+  if (moved) return moved;
   if (base !== options.targetBranch && !(await branchExists(repoDir, base))) {
     // The recorded base is what the work is built on: never silently rebuild it on the target branch.
     await store.comment(

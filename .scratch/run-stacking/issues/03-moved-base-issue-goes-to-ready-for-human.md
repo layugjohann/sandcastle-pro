@@ -1,6 +1,6 @@
 # 03: An Issue whose recorded Base Issue is no longer the top goes to ready-for-human
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/32
 Blocked by: 02
 

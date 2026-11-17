@@ -1,6 +1,6 @@
 # 03: An Issue whose recorded Base Issue is no longer the top goes to ready-for-human
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 02
 
 Spec: `.scratch/run-stacking/spec.md` (stories 20–23), ADR `docs/adr/0005-a-run-stacks-every-issue-on-the-top-of-the-stack.md`
@@ -16,3 +16,16 @@ Spec: `.scratch/run-stacking/spec.md` (stories 20–23), ADR `docs/adr/0005-a-ru
   - An Issue set back while its Base Issue is still the top starts normally.
 
 ## Comments
+
+Usage: Implementer 42 input, 11,118 output, 76,325 cache creation, 878,187 cache read; Review Session 10 input, 3,176 output, 27,771 cache creation, 153,286 cache read.
+
+**Review Session: Non-critical Findings**
+
+- sendBackIfBaseMoved checks `issue.stackedOn === undefined` even though toIssue only sets currentTop when stackedOn is defined; the check is redundant.
+- The new `currentTop` field is on the exported public `Issue` type, but only the Run uses it to decide whether to start an Issue.
+- No test shows that a paused Stacked Issue whose recorded Base Issue is no longer the top still resumes on it (checklist item 4). The code handles it, but nothing guards it.
+- The code comment in runIssue still says the base is 'its blocker's' branch for a Stacked Issue; in "run" mode it may be a Base Issue that is not a blocker (Issue 04 may cover this wording).
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-03-2026-11-17T08-46-16-801Z.log`).
+
+Usage: Body writer 2 input, 1,234 output, 24,186 cache creation, 11,457 cache read.

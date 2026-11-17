@@ -1,6 +1,6 @@
 # 02: "stack": "run" stacks each Issue on the top of the Stack
 
-Status: awaiting-merge
+Status: done
 Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/31
 Blocked by: 01
 

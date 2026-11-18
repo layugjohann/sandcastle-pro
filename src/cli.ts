@@ -4,7 +4,6 @@ import { parseArgs } from "node:util";
 import { resolveAuth } from "./auth.js";
 import { loadConfig, SANDBOXES, type SandboxChoice } from "./config.js";
 import { initProject } from "./init.js";
-import { createIssueStore } from "./issue-store.js";
 import { runWorkflow } from "./run-workflow.js";
 import { createSandcastleAgent } from "./sandcastle-agent.js";
 import { withTerminalPrompt } from "./terminal-prompt.js";
@@ -44,7 +43,7 @@ async function main(argv: string[]): Promise<number> {
   // Checked before any Issue changes status, so a missing token never leaves an Issue in-progress.
   const auth = resolveAuth(repoDir);
   const agent = createSandcastleAgent({ repoDir, sandbox: config.sandbox, auth });
-  const result = await runWorkflow({ repoDir, agent, config, store: createIssueStore(repoDir), count });
+  const result = await runWorkflow({ repoDir, agent, config, count });
   return result.issues.some((r) => r.outcome === "gate-failed" || r.outcome === "critical-unfixed" || r.outcome === "base-missing" || r.outcome === "base-moved") ? 1 : 0;
 }
 

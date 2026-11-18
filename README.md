@@ -178,14 +178,22 @@ default=${default:-main}
 [ "$branch" = "$default" ] || { echo "land-done: on '$branch', not '$default'." >&2; exit 1; }
 
 files=$(git diff --name-only -- .scratch | grep '\.md$' \
-  | while read -r f; do grep -qE '^\**Status\**:\**[[:space:]]*done\b' "$f" && echo "$f"; done)
+  | while read -r f; do if grep -qsE '^\**Status\**:\**[[:space:]]*done\b' "$f"; then echo "$f"; fi; done)
 [ -n "$files" ] || { echo "land-done: no done Issues to commit."; exit 0; }
 
 numbers=$(echo "$files" | sed -E 's|.*/([0-9]+)-[^/]*$|\1|' | paste -sd ',' - | sed 's/,/, /g')
+case $numbers in *,*) noun=Issues ;; *) noun=Issue ;; esac
 echo "$files" | while read -r f; do git add -- "$f"; done
-git commit -m "Mark Issues $numbers as done"
-git push
+git commit -m "Mark $noun $numbers as done"
+git push || {
+  echo "land-done: committed locally, but the push was rejected. Run: git pull --rebase --autostash && git push" >&2
+  exit 1
+}
 ```
+
+Every command in the loop body must succeed when a file isn't `done`: under `set -e`, a loop whose last command fails ends the script with no output.
+
+If the push is rejected because you merged Pull Requests on GitHub since the Run, the commit is already made. Run `git pull --rebase --autostash`, then `git push`. `--autostash` sets aside the `awaiting-merge` Issue files that stay uncommitted, which would otherwise stop the rebase.
 
 In Claude Code, run it with `! land-done`.
 

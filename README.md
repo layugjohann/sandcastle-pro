@@ -57,6 +57,7 @@ You don't need to run `init` again after an update. Read the changes for any new
 `sandcastle-pro init` makes a project ready for Runs. It never overwrites a file that already exists. It:
 
 - detects Gate commands from package scripts, Python project config and Makefile targets, and asks you to keep, drop or add commands;
+- puts an install command first when it detects package scripts, such as `npm ci --no-audit --no-fund` (exact, from the lockfile) or `pnpm install --frozen-lockfile`, because the Gate runs in a fresh worktree with no `node_modules`;
 - offers to turn on Pull Requests, when `origin` is on GitHub and `gh` is logged in;
 - writes `sandcastle-pro.config.json`, `.sandcastle/CODING_STANDARDS.md`, `.sandcastle/.env.example` and `docs/agents/sandcastle-pro-issues.md`;
 - adds `.sandcastle/.env`, `.sandcastle/logs/` and `.sandcastle/worktrees/` to `.gitignore`.

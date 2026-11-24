@@ -118,28 +118,44 @@ describe("init", () => {
   });
 
   describe("Gate detection", () => {
-    it("detects the test, typecheck and lint package scripts, cheapest first, run with npm by default", async () => {
+    it("detects the test, typecheck and lint package scripts, cheapest first, run with npm by default after installing", async () => {
       writeFile(dir, "package.json", JSON.stringify({ scripts: { build: "tsc", test: "vitest run", lint: "eslint .", typecheck: "tsc --noEmit" } }));
 
       await initProject({ repoDir: dir, log });
 
-      expect((await loadConfig(dir)).gate).toEqual(["npm run typecheck", "npm run lint", "npm run test"]);
+      expect((await loadConfig(dir)).gate).toEqual(["npm install --no-audit --no-fund", "npm run typecheck", "npm run lint", "npm run test"]);
     });
 
+    // The Gate runs in a fresh worktree with no node_modules, so without an install step every script fails
+    // with "command not found". A lockfile makes the install exact; without one, a frozen install would fail.
     it.each([
-      ["pnpm-lock.yaml", {}, "pnpm"],
-      ["yarn.lock", {}, "yarn"],
-      ["bun.lock", {}, "bun"],
-      ["package-lock.json", {}, "npm"],
-      [undefined, { packageManager: "pnpm@9.12.0" }, "pnpm"],
-      ["package-lock.json", { packageManager: "yarn@4.5.0" }, "yarn"],
-    ] as const)("with lockfile %s and %j, runs the package scripts with %s", async (lockfile, fields, manager) => {
+      ["pnpm-lock.yaml", "", {}, "pnpm", "pnpm install --frozen-lockfile"],
+      ["yarn.lock", "# yarn lockfile v1\n", {}, "yarn", "yarn install --frozen-lockfile"],
+      ["yarn.lock", "__metadata:\n  version: 8\n", {}, "yarn", "yarn install --immutable"],
+      ["yarn.lock", "", { packageManager: "yarn@4.5.0" }, "yarn", "yarn install --immutable"],
+      ["bun.lock", "", {}, "bun", "bun install --frozen-lockfile"],
+      ["bun.lockb", "", {}, "bun", "bun install --frozen-lockfile"],
+      ["package-lock.json", "", {}, "npm", "npm ci --no-audit --no-fund"],
+      ["npm-shrinkwrap.json", "", {}, "npm", "npm ci --no-audit --no-fund"],
+      [undefined, "", { packageManager: "pnpm@9.12.0" }, "pnpm", "pnpm install"],
+      ["package-lock.json", "", { packageManager: "yarn@4.5.0" }, "yarn", "yarn install"],
+    ] as const)("with lockfile %s holding %j and %j, runs the package scripts with %s after `%s`", async (lockfile, lockText, fields, manager, install) => {
       writeFile(dir, "package.json", JSON.stringify({ ...fields, scripts: { test: "vitest run" } }));
-      if (lockfile) writeFile(dir, lockfile, "");
+      if (lockfile) writeFile(dir, lockfile, lockText);
 
       await initProject({ repoDir: dir, log });
 
-      expect((await loadConfig(dir)).gate).toEqual([`${manager} run test`]);
+      expect((await loadConfig(dir)).gate).toEqual([install, `${manager} run test`]);
+    });
+
+    it("adds no install step when no package script is a Gate command", async () => {
+      writeFile(dir, "package.json", JSON.stringify({ scripts: { build: "tsc" } }));
+      writeFile(dir, "package-lock.json", "");
+      writeFile(dir, "Makefile", "test:\n\tgo test ./...\n");
+
+      await initProject({ repoDir: dir, log });
+
+      expect((await loadConfig(dir)).gate).toEqual(["make test"]);
     });
 
     it("ignores the placeholder test script `npm init` writes, which always fails", async () => {
@@ -147,7 +163,7 @@ describe("init", () => {
 
       await initProject({ repoDir: dir, log });
 
-      expect((await loadConfig(dir)).gate).toEqual(["npm run lint"]);
+      expect((await loadConfig(dir)).gate).toEqual(["npm install --no-audit --no-fund", "npm run lint"]);
     });
 
     it.each([
@@ -212,7 +228,7 @@ describe("init", () => {
 
       await initProject({ repoDir: dir, log });
 
-      expect((await loadConfig(dir)).gate).toEqual(["npm run test", "ruff check .", "make typecheck"]);
+      expect((await loadConfig(dir)).gate).toEqual(["npm install --no-audit --no-fund", "npm run test", "ruff check .", "make typecheck"]);
     });
 
     it("fails with a clear message and writes nothing when no Gate commands are detected and no prompt is possible", async () => {
@@ -247,22 +263,26 @@ describe("init", () => {
     beforeEach(() => writeFile(dir, "package.json", JSON.stringify({ scripts: { test: "vitest run", lint: "eslint ." } })));
 
     it("shows the detected commands and keeps them all when the user just presses Enter", async () => {
-      const user = scripted("", "", "");
+      const user = scripted("", "", "", "");
 
       await initProject({ repoDir: dir, ask: user.ask, log });
 
       expect(output.join("\n")).toMatch(/Detected Gate commands/);
-      expect(user.questions.slice(0, 2)).toEqual([expect.stringContaining("npm run lint"), expect.stringContaining("npm run test")]);
+      expect(user.questions.slice(0, 3)).toEqual([
+        expect.stringContaining("npm install"),
+        expect.stringContaining("npm run lint"),
+        expect.stringContaining("npm run test"),
+      ]);
       expect(user.unanswered).toEqual([]);
-      expect((await loadConfig(dir)).gate).toEqual(["npm run lint", "npm run test"]);
+      expect((await loadConfig(dir)).gate).toEqual(["npm install --no-audit --no-fund", "npm run lint", "npm run test"]);
     });
 
     it("lets the user drop detected commands and add their own", async () => {
-      const user = scripted("n", "Y", "  npm run e2e  ", "");
+      const user = scripted("", "n", "Y", "  npm run e2e  ", "");
 
       await initProject({ repoDir: dir, ask: user.ask, log });
 
-      expect((await loadConfig(dir)).gate).toEqual(["npm run test", "npm run e2e"]);
+      expect((await loadConfig(dir)).gate).toEqual(["npm install --no-audit --no-fund", "npm run test", "npm run e2e"]);
     });
 
     it("asks for commands when none are detected, until the user gives at least one", async () => {

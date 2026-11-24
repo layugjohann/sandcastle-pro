@@ -7,7 +7,8 @@ const KINDS = ["typecheck", "lint", "test"] as const;
 type Kind = (typeof KINDS)[number];
 
 interface Detected {
-  kind: Kind;
+  /** "install" installs the dependencies the commands after it need; it never stands in for a check. */
+  kind: Kind | "install";
   command: string;
 }
 
@@ -39,7 +40,31 @@ async function fromPackageScripts(repoDir: string): Promise<Detected[]> {
   }
   const scripts = pkg.scripts ?? {};
   const manager = packageManager(repoDir, pkg);
-  return KINDS.filter((kind) => isRealScript(scripts[kind])).map((kind) => ({ kind, command: `${manager} run ${kind}` }));
+  const checks = KINDS.filter((kind) => isRealScript(scripts[kind])).map((kind) => ({ kind, command: `${manager} run ${kind}` }));
+  if (checks.length === 0) return [];
+  return [{ kind: "install", command: await installCommand(repoDir, manager, pkg) }, ...checks];
+}
+
+/**
+ * The Gate runs in a fresh worktree with no `node_modules`, and without the main checkout's `node_modules/.bin` on
+ * its PATH, so a package script fails with "command not found" unless the Gate installs first. With the manager's
+ * own lockfile, the install is exact and fails when the lockfile is out of date; without one, a frozen install
+ * would always fail, so it is a plain install.
+ */
+async function installCommand(repoDir: string, manager: string, pkg: PackageJson): Promise<string> {
+  const hasLockfile = LOCKFILES.some(([file, owner]) => owner === manager && exists(repoDir, file));
+  if (manager === "npm") return hasLockfile ? "npm ci --no-audit --no-fund" : "npm install --no-audit --no-fund";
+  if (!hasLockfile) return `${manager} install`;
+  if (manager === "yarn") return (await isYarnBerry(repoDir, pkg)) ? "yarn install --immutable" : "yarn install --frozen-lockfile";
+  if (manager === "pnpm" || manager === "bun") return `${manager} install --frozen-lockfile`;
+  return `${manager} install`;
+}
+
+/** Yarn 2 and later dropped `--frozen-lockfile` for `--immutable`. Their lockfile starts with a `__metadata` block. */
+async function isYarnBerry(repoDir: string, pkg: PackageJson): Promise<boolean> {
+  const declared = typeof pkg.packageManager === "string" ? /^yarn@(\d+)/.exec(pkg.packageManager)?.[1] : undefined;
+  if (declared !== undefined) return Number(declared) >= 2;
+  return /^__metadata:/m.test((await readOptional(join(repoDir, "yarn.lock"))) ?? "");
 }
 
 /** The `test` script `npm init` writes always fails, so it can't be a Gate command. */
@@ -53,6 +78,7 @@ const LOCKFILES: [file: string, manager: string][] = [
   ["bun.lock", "bun"],
   ["bun.lockb", "bun"],
   ["package-lock.json", "npm"],
+  ["npm-shrinkwrap.json", "npm"],
 ];
 
 /** The `packageManager` field (Corepack) wins over lockfiles; npm when neither says. */

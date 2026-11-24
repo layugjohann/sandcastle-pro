@@ -24,7 +24,7 @@ npx sandcastle-pro init
 ### From source
 
 ```sh
-git clone https://github.com/layugjohann/sandcastle-pro.git   # private repo for now
+git clone https://github.com/layugjohann/sandcastle-pro.git
 cd sandcastle-pro
 npm install
 npm run build

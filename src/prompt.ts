@@ -85,7 +85,9 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
     `## Issue\n\n${issue.text.trim()}`,
   ];
   if (issue.spec) sections.push(`## Spec\n\n${issue.spec.trim()}`);
-  if (context.glossary) sections.push(`## Glossary\n\nThe change must use these terms as defined.\n\n${context.glossary.trim()}`);
+  if (context.glossary) {
+    sections.push(`## Glossary\n\nThe change must use these terms as defined.\n\n${context.glossary.trim()}`);
+  }
   sections.push(
     ADR_CHECK,
     codingStandardsSection(context.standards),

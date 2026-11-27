@@ -526,6 +526,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
           // Loaded only here: the Implementer never pays for Coding Standards.
           standards: await loadCodingStandards(repoDir),
           gate: config.gate,
+          glossary: await readOptional(join(repoDir, "GLOSSARY.md")),
           sandbox: config.sandbox,
         }),
     model,

@@ -444,6 +444,28 @@ describe("Review Session", () => {
     ]);
   });
 
+  it("classifies any behaviour other than intended, and any ADR or glossary contradiction, as Critical", async () => {
+    repo.write("GLOSSARY.md", "# Glossary\n\nREVIEW-GLOSSARY-MARKER\n");
+    repo.commitAll("add glossary");
+    const agent = fakeAgent(repo.dir);
+
+    await runWorkflow({ repoDir: repo.dir, agent, config: configWithGate(["true"]), log });
+
+    const review = agent.calls.find((c) => c.stage === "review-session")!.prompt;
+    // The behaviour test: what a user or caller sees, however small, is Critical.
+    expect(review).toMatch(/user or caller/i);
+    // Contradicting an ADR or a glossary definition is Critical; an Avoid word in a name is not.
+    expect(review).toMatch(/\bADR\b/);
+    expect(review).toMatch(/glossary definition/i);
+    expect(review).toMatch(/_Avoid_/);
+    expect(review).toMatch(/behaves correctly/i);
+    // The tiebreak.
+    expect(review).toMatch(/might be either/i);
+    // The glossary is inlined; the ADRs are named by path.
+    expect(review).toContain("REVIEW-GLOSSARY-MARKER");
+    expect(review).toContain("`docs/adr/`");
+  });
+
   it("names each configured Gate command in its prompt and says the Run runs the Gate itself", async () => {
     const agent = fakeAgent(repo.dir);
 

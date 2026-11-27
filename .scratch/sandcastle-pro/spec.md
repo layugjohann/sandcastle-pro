@@ -107,7 +107,7 @@ I plan Specs and Issues interactively in a normal Claude Code session, and I mer
 
 ## Testing Decisions
 
-- **Test only external behavior.** A good test sets up a world (a git repo, Issue files, config), runs a command or the Run Workflow, and asserts what a user could observe. That means Issue statuses and comments, branches and commits, printed output and exit behavior. Tests never assert on internal calls or prompt wording.
+- **Test only external behavior.** A good test sets up a world (a git repo, Issue files, config), runs a command or the Run Workflow, and asserts what a user could observe. That means Issue statuses and comments, branches and commits, printed output and exit behavior. Tests never assert on internal calls or exact prompt wording. A prompt is what an agent can observe, so a test may check that a prompt carries a required instruction (a section heading or a key rule), but never pin its full text.
 - **One seam: the Agent.** Run Workflow tests inject a fake Agent that is scripted for each scenario. It can make commits on the branch, return Findings (critical fixed, non-critical), return a Spec disagreement, return limit-reached with a session id, and report token usage. Everything else is real:
   - a temporary git repository
   - real `.scratch` Issue files

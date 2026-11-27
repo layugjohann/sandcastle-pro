@@ -15,17 +15,17 @@ Real bugs were among them, all in code the Issue's own change added: a warning w
 contradicts ADR 0011 (Issue 14). They were already Critical under the old definition ("a correctness bug"), so the
 Review Session misclassified them.
 
-- [ ] `SEVERITY_DEFINITION` says a Finding is Critical if a user or caller would see the change behave other than
+- [x] `SEVERITY_DEFINITION` says a Finding is Critical if a user or caller would see the change behave other than
       intended, however small (for example a message that never shows, stale state after undo, a check that only
       holds while `assert` is enabled).
-- [ ] It counts a contradiction of an ADR or a glossary definition as Critical, like a Spec contradiction. Using a
+- [x] It counts a contradiction of an ADR or a glossary definition as Critical, like a Spec contradiction. Using a
       glossary _Avoid_ word in a name stays Non-critical.
-- [ ] It says: if a Finding might be either, it is Critical.
-- [ ] Non-critical is narrowed to "the change behaves correctly but could be written better": style, naming,
+- [x] It says: if a Finding might be either, it is Critical.
+- [x] Non-critical is narrowed to "the change behaves correctly but could be written better": style, naming,
       simplification, dead code.
-- [ ] The Review prompt includes the glossary (as the Implementer prompt does) and tells the agent to check the
+- [x] The Review prompt includes the glossary (as the Implementer prompt does) and tells the agent to check the
       changed behaviour against the ADRs in `docs/adr/` (by path, not inlined).
-- [ ] Tests check the Review prompt for the behaviour test, the ADR/glossary rule, the tiebreak and the glossary.
+- [x] Tests check the Review prompt for the behaviour test, the ADR/glossary rule, the tiebreak and the glossary.
 
 ## Comments
 

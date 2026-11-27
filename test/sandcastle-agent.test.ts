@@ -1,5 +1,22 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { resultUsage } from "../src/sandcastle-agent.js";
+import { beforeUsrBin, resultUsage } from "../src/sandcastle-agent.js";
+
+describe("beforeUsrBin", () => {
+  const pathAfter = (dir: string, path: string) =>
+    execFileSync("/bin/sh", ["-c", `${beforeUsrBin(dir)}; printf %s "$PATH"`], { encoding: "utf8", env: { PATH: path } });
+
+  it("puts the dir just before /usr/bin, leaving earlier dirs first", () => {
+    expect(pathAfter("/Dev/usr/bin", "/opt/homebrew/bin:/usr/bin:/bin")).toBe("/opt/homebrew/bin:/Dev/usr/bin:/usr/bin:/bin");
+    expect(pathAfter("/Dev/usr/bin", "/usr/bin:/bin")).toBe("/Dev/usr/bin:/usr/bin:/bin");
+    expect(pathAfter("/Dev/usr/bin", "/bin:/usr/bin")).toBe("/bin:/Dev/usr/bin:/usr/bin");
+  });
+
+  it("leaves PATH alone without /usr/bin, and keeps a dir with shell or sed metacharacters intact", () => {
+    expect(pathAfter("/Dev/usr/bin", "/bin:/usr/bin/x")).toBe("/bin:/usr/bin/x");
+    expect(pathAfter("/A & B's #1\\/bin", "/usr/bin")).toBe("/A & B's #1\\/bin:/usr/bin");
+  });
+});
 
 describe("resultUsage", () => {
   it("reads the session total from Claude's result line, not one message's usage", () => {

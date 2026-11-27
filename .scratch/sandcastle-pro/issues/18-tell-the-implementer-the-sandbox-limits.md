@@ -17,17 +17,17 @@ sandbox's own temp directory. The agent isn't told about any of this. Across the
   `xcodebuild`, which fails to load `DVTSystemPrerequisites.framework` under Seatbelt. The real binary under
   `$(xcode-select -p)/usr/bin` runs fine under a write-restricting Seatbelt profile.
 
-- [ ] `buildImplementerPrompt` and `buildReviewPrompt` receive `config.sandbox` (today they don't:
+- [x] `buildImplementerPrompt` and `buildReviewPrompt` receive `config.sandbox` (today they don't:
       `run-workflow.ts` around the Implementer and Review Session calls).
-- [ ] When the sandbox is `native` (macOS and Linux alike), both prompts get a "Sandbox" section of at most about
+- [x] When the sandbox is `native` (macOS and Linux alike), both prompts get a "Sandbox" section of at most about
       5 lines saying, positively: put scratch files under `$TMPDIR`; never write to a literal `/tmp` path (the sandbox
       blocks it); never put scratch files inside the repo. No section under any other sandbox.
-- [ ] On macOS, the native sandbox puts the host's `$(xcode-select -p)/usr/bin` (resolved on the host) first on
+- [x] On macOS, the native sandbox puts the host's `$(xcode-select -p)/usr/bin` (resolved on the host) first on
       `PATH`, so `make` and other shimmed tools bypass `xcrun`. Verified with a real `make` call inside a native
       sandbox, since the real Seatbelt profile also limits reads. If that can't be made to work, fall back to a
       prompt line: `make` is unavailable on macOS; for a `make <target>` Gate command, run that target's recipe from
       the Makefile.
-- [ ] Tests cover the section appearing in both prompts under `native`, and its absence otherwise.
+- [x] Tests cover the section appearing in both prompts under `native`, and its absence otherwise.
 
 Out of scope:
 - `timeout` (exit 127): a macOS fact (no GNU coreutils), not a sandbox limit, and agents recover at once.
@@ -37,3 +37,10 @@ Out of scope:
 
 **Triage (2026-11-27):** Fixing `make` at the sandbox level replaces the planned "make is unavailable; run the Gate
 commands directly" line, which would not work for Gates detected as `make <target>` (`gate-detection.ts`).
+
+**Implementer (2026-11-27):** The developer `usr/bin` goes on `PATH` just before `/usr/bin`, not first. That dir also
+holds Xcode's `python3` (3.9), `pip3` and `git`, and putting it first would hide the host's own (Homebrew, python.org)
+ones. Just before `/usr/bin` still puts it ahead of every `xcrun` shim, which is the point. Checked inside a real
+Seatbelt sandbox: `/usr/bin/make` fails on `DVTSystemPrerequisites`. With the new `PATH` line, `make` resolves to
+`/Applications/Xcode.app/Contents/Developer/usr/bin/make` and runs a Makefile target, and `python3` and `git` still
+resolve to the host's earlier dirs.

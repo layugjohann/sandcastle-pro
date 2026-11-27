@@ -1,9 +1,15 @@
 import { STAGE_NAMES, type Finding, type PausableStage } from "./agent.js";
 import type { CodingStandardsLayer } from "./coding-standards.js";
+import type { SandboxChoice } from "./config.js";
 import type { Issue } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 
-export function buildImplementerPrompt(issue: Issue, glossary: string | undefined, gate: readonly string[]): string {
+export function buildImplementerPrompt(
+  issue: Issue,
+  glossary: string | undefined,
+  gate: readonly string[],
+  sandbox: SandboxChoice,
+): string {
   const sections = [
     "You are the Implementer. Turn the Issue below into commits on the current branch.",
     "Work only on what the Issue asks for. Commit your work before you finish.",
@@ -18,6 +24,7 @@ export function buildImplementerPrompt(issue: Issue, glossary: string | undefine
       "The worktree starts without installed dependencies, so run them in this order to check your work before you finish.",
     ),
   );
+  if (sandbox === "native") sections.push(SANDBOX_SECTION);
   return `${sections.join("\n\n")}\n`;
 }
 
@@ -31,26 +38,50 @@ export interface ReviewContext {
   standards: readonly CodingStandardsLayer[];
   /** The configured Gate commands, in the order the Run Workflow runs them. */
   gate: readonly string[];
+  /** The project's GLOSSARY.md, if it has one. */
+  glossary?: string | undefined;
+  /** The sandbox the Review Session runs in. */
+  sandbox: SandboxChoice;
 }
+
+/**
+ * The native sandbox's write limits, which agents otherwise discover by failing: a literal `/tmp` path is blocked,
+ * and agents then fell back to probe scripts inside the repo, where they risk being committed.
+ */
+const SANDBOX_SECTION = `## Sandbox
+
+You run in a sandbox that blocks writes outside the worktree and a private temp directory.
+Put scratch files (notes, probe scripts, logs) under \`$TMPDIR\`.
+Never write to a literal \`/tmp\` path: the sandbox blocks it.
+Never put scratch files inside the repo, not even in \`tests/\`.`;
 
 const SEVERITY_DEFINITION = `## Critical vs. Non-critical
 
 A **Critical Finding** makes the change wrong. It is one of:
-- a correctness bug
-- a contradiction of the Spec or the Issue
+- anything a user or caller would see the change do other than intended, however small: for example a message that
+  never shows, state left stale after an undo, or a check that only holds while \`assert\` is enabled
+- a contradiction of the Spec, the Issue, an ADR or a glossary definition
 - a security hole
 - a Gate failure (a Gate command below fails)
 - data loss
 - a breach of a Must Rule (see Coding Standards)
 
-A **Non-critical Finding** makes the change worse but not wrong, such as style, naming or simplification.
+A **Non-critical Finding** is about a change that behaves correctly but could be written better: style, naming,
+simplification or dead code. Using a glossary _Avoid_ word in a name is Non-critical.
 Breaking any Coding Standard that is not a Must Rule is a Non-critical Finding.
+
+If a Finding might be either, it is Critical.
 
 Fix every Critical Finding yourself, in this pass, with commits on the current branch.
 Do not fix Non-critical Findings; report them for the human.
 
 If you believe the Spec itself is wrong, do not change anything because of it.
 Report it as a Spec disagreement instead.`;
+
+const ADR_CHECK = `## ADRs
+
+Check the changed behaviour against the ADRs in \`docs/adr/\`. Read the ones the change touches; a change that
+contradicts an ADR is a Critical Finding.`;
 
 const OUTPUT_FORMAT = `## Output
 
@@ -74,7 +105,11 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
     `## Issue\n\n${issue.text.trim()}`,
   ];
   if (issue.spec) sections.push(`## Spec\n\n${issue.spec.trim()}`);
+  if (context.glossary) {
+    sections.push(`## Glossary\n\nThe change must use these terms as defined.\n\n${context.glossary.trim()}`);
+  }
   sections.push(
+    ADR_CHECK,
     codingStandardsSection(context.standards),
     gateSection(
       context.gate,
@@ -83,8 +118,9 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
     ),
     `## Commits\n\n${fenced(context.commits.trim() || "(no commits)")}`,
     `## Diff\n\n${fenced(context.diff.trim() || "(empty diff)", "diff")}`,
-    OUTPUT_FORMAT,
   );
+  if (context.sandbox === "native") sections.push(SANDBOX_SECTION);
+  sections.push(OUTPUT_FORMAT);
   return `${sections.join("\n\n")}\n`;
 }
 

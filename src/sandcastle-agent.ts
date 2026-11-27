@@ -7,6 +7,7 @@
  * that error into the completion signal: Sandcastle ends the call as a success, captures the session and
  * preserves a dirty worktree, and the adapter returns limit-reached for the Run Workflow to pause on.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeCode, run, type AgentProvider, type SandboxProvider } from "@ai-hero/sandcastle";
@@ -32,7 +33,7 @@ export function createSandcastleAgent({ repoDir, sandbox, auth }: SandcastleAgen
   return {
     async run(call: AgentCall): Promise<AgentResult> {
       const provider = claudeCode(call.model, { effort: call.effort, env: auth.env });
-      const watch = watchStream(sandboxedClaudeCode(provider));
+      const watch = watchStream(sandboxedClaudeCode(provider, sandbox === "native" ? developerBin() : undefined));
       // Read after run(): Claude reports the session id during the call.
       const session = () => watch.sessionId ?? call.resumeSession;
       let result;
@@ -117,13 +118,16 @@ function watchStream(provider: AgentProvider): StreamWatch {
  * Claude also exits non-zero after reporting an error in its stream, and Sandcastle fails on the exit code
  * before looking at the stream. So a non-zero exit becomes 0 only when Claude reported the error in its result line;
  * Sandcastle still fails on that error unless `watchStream` finds it is the usage limit.
+ *
+ * `developerBin`, when given, goes on `PATH` just before `/usr/bin` (see `developerBin`).
  */
-function sandboxedClaudeCode(provider: AgentProvider): AgentProvider {
+function sandboxedClaudeCode(provider: AgentProvider, developerBin?: string): AgentProvider {
   return {
     ...provider,
     buildPrintCommand(options) {
       const built = provider.buildPrintCommand(options);
       const command = [
+        ...(developerBin ? [beforeUsrBin(developerBin)] : []),
         `tmp="\${TMPDIR:-/tmp}"; out=$(mktemp "$tmp/sandcastle-out.XXXXXX") && code_file=$(mktemp "$tmp/sandcastle-code.XXXXXX") || exit 1`,
         `{ CLAUDE_CODE_TMPDIR="$TMPDIR" TMPPREFIX="$TMPDIR/zsh" ${built.command}; echo $? > "$code_file"; } | tee "$out"`,
         `code=$(cat "$code_file"); code=\${code:-1}`,
@@ -135,6 +139,38 @@ function sandboxedClaudeCode(provider: AgentProvider): AgentProvider {
       return { ...built, command };
     },
   };
+}
+
+/**
+ * The host's `$(xcode-select -p)/usr/bin` on macOS, or undefined elsewhere or when it can't be found.
+ * `/usr/bin/make` and the other developer tools there are `xcrun` shims, which fail under Seatbelt: `xcrun` can't
+ * write its cache (it ignores `TMPDIR`), then runs `xcodebuild`, which Seatbelt stops loading its frameworks.
+ * The real binaries in this dir run fine, and the sandbox can already read it.
+ */
+function developerBin(): string | undefined {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const dir = join(execFileSync("xcode-select", ["-p"], { encoding: "utf8" }).trim(), "usr", "bin");
+    return existsSync(dir) ? dir : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A shell line that puts `dir` on `PATH` just before `/usr/bin`, so it replaces the shims there.
+ * Not first: the dir also holds Xcode's own `python3`, `pip3` and `git`, which must not hide the host's earlier ones.
+ * Without `/usr/bin` on `PATH` there are no shims to replace, and `PATH` is left alone.
+ */
+export function beforeUsrBin(dir: string): string {
+  const quoted = `'${dir.replace(/'/g, "'\\''")}'`;
+  // Parameter expansion only: without `/usr/bin` on `PATH`, `sed` and friends aren't found.
+  return [
+    `p=":$PATH:"`,
+    `case "$p" in *:/usr/bin:*) p="\${p%%:/usr/bin:*}:"${quoted}":/usr/bin:\${p#*:/usr/bin:}";; esac`,
+    `p="\${p#:}"`,
+    `export PATH="\${p%:}"`,
+  ].join("; ");
 }
 
 /**

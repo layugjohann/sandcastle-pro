@@ -33,11 +33,11 @@ One problem identified during a Review Session.
 _Avoid_: Comment, issue (reserved for Issue)
 
 **Critical Finding**:
-A Finding that makes the change wrong: a correctness bug, a contradiction of the Spec or Issue, a security hole, a Gate failure, or data loss. Fixed within the same Review Session.
+A Finding that makes the change wrong: anything a user or caller would see behave other than intended (however small), a contradiction of the Spec, the Issue, an ADR or a glossary definition, a security hole, a Gate failure, or data loss. A Finding that might be either is Critical. Fixed within the same Review Session.
 _Avoid_: Blocker, must-fix
 
 **Non-critical Finding**:
-A Finding that makes the change worse but not wrong, such as style, naming, or simplification. Logged on the Issue for the human.
+A Finding about a change that behaves correctly but could be written better, such as style, naming, simplification, or dead code. Logged on the Issue for the human.
 _Avoid_: Nit, suggestion
 
 **Coding Standards**:

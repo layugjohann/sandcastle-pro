@@ -1,6 +1,7 @@
 # 19: Review Sessions classify bugs as Critical
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/37
 Blocked by: None
 
 Spec: `.scratch/sandcastle-pro/spec.md`
@@ -60,3 +61,5 @@ Usage: Implementer 10 input, 1,896 output, 22,347 cache creation, 135,536 cache 
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-19-2026-11-27T11-19-23-864Z.log`).
 
 Usage: Body writer 2 input, 1,138 output, 21,321 cache creation, 11,837 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/37

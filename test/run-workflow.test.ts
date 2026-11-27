@@ -116,6 +116,30 @@ describe("Run Workflow", () => {
     expect(statusOf(repo, "01-only.md")).toBe("awaiting-merge");
   });
 
+  it("tells both stages where scratch files go under the native sandbox, and neither under Docker", async () => {
+    for (const sandbox of ["native", "docker"] as const) {
+      const file = `01-${sandbox}.md`;
+      repo.write(`${ISSUES}/${file}`, issueFile({ title: `01: ${sandbox}`, status: "ready-for-agent" }));
+      repo.commitAll(`add ${sandbox} issue`);
+
+      const agent = fakeAgent(repo.dir);
+      await runWorkflow({ repoDir: repo.dir, agent, config: { ...configWithGate(["true"]), sandbox }, log });
+
+      expect(agent.calls.map((c) => c.stage)).toEqual(["implementer", "review-session"]);
+      for (const { prompt } of agent.calls) {
+        if (sandbox === "native") {
+          expect(prompt).toMatch(/^## Sandbox$/m);
+          expect(prompt).toContain("$TMPDIR");
+        } else {
+          expect(prompt).not.toMatch(/^## Sandbox$/m);
+        }
+      }
+      // Out of the way, so the next sandbox's Run picks its own Issue.
+      repo.write(`${ISSUES}/${file}`, issueFile({ title: `01: ${sandbox}`, status: "done" }));
+      repo.commitAll(`finish ${sandbox} issue`);
+    }
+  });
+
   it("moves an Issue that fails the Gate to ready-for-human with the output in its comments, keeping its branch", async () => {
     repo.write(`${ISSUES}/01-only.md`, issueFile({ title: "01: Only", status: "ready-for-agent" }));
     repo.commitAll("add issue");

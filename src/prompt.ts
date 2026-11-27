@@ -1,9 +1,15 @@
 import { STAGE_NAMES, type Finding, type PausableStage } from "./agent.js";
 import type { CodingStandardsLayer } from "./coding-standards.js";
+import type { SandboxChoice } from "./config.js";
 import type { Issue } from "./issue-store.js";
 import { fenced } from "./markdown.js";
 
-export function buildImplementerPrompt(issue: Issue, glossary: string | undefined, gate: readonly string[]): string {
+export function buildImplementerPrompt(
+  issue: Issue,
+  glossary: string | undefined,
+  gate: readonly string[],
+  sandbox: SandboxChoice,
+): string {
   const sections = [
     "You are the Implementer. Turn the Issue below into commits on the current branch.",
     "Work only on what the Issue asks for. Commit your work before you finish.",
@@ -18,6 +24,7 @@ export function buildImplementerPrompt(issue: Issue, glossary: string | undefine
       "The worktree starts without installed dependencies, so run them in this order to check your work before you finish.",
     ),
   );
+  if (sandbox === "native") sections.push(SANDBOX_SECTION);
   return `${sections.join("\n\n")}\n`;
 }
 
@@ -31,7 +38,20 @@ export interface ReviewContext {
   standards: readonly CodingStandardsLayer[];
   /** The configured Gate commands, in the order the Run Workflow runs them. */
   gate: readonly string[];
+  /** The sandbox the Review Session runs in. */
+  sandbox: SandboxChoice;
 }
+
+/**
+ * The native sandbox's write limits, which agents otherwise discover by failing: a literal `/tmp` path is blocked,
+ * and agents then fell back to probe scripts inside the repo, where they risk being committed.
+ */
+const SANDBOX_SECTION = `## Sandbox
+
+You run in a sandbox that blocks writes outside the worktree and a private temp directory.
+Put scratch files (notes, probe scripts, logs) under \`$TMPDIR\`.
+Never write to a literal \`/tmp\` path: the sandbox blocks it.
+Never put scratch files inside the repo, not even in \`tests/\`.`;
 
 const SEVERITY_DEFINITION = `## Critical vs. Non-critical
 
@@ -83,8 +103,9 @@ export function buildReviewPrompt(issue: Issue, context: ReviewContext): string 
     ),
     `## Commits\n\n${fenced(context.commits.trim() || "(no commits)")}`,
     `## Diff\n\n${fenced(context.diff.trim() || "(empty diff)", "diff")}`,
-    OUTPUT_FORMAT,
   );
+  if (context.sandbox === "native") sections.push(SANDBOX_SECTION);
+  sections.push(OUTPUT_FORMAT);
   return `${sections.join("\n\n")}\n`;
 }
 

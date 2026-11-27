@@ -1,6 +1,6 @@
 # 18: Tell the Implementer what the sandbox blocks
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: None
 
 Spec: `.scratch/sandcastle-pro/spec.md`
@@ -44,3 +44,16 @@ ones. Just before `/usr/bin` still puts it ahead of every `xcrun` shim, which is
 Seatbelt sandbox: `/usr/bin/make` fails on `DVTSystemPrerequisites`. With the new `PATH` line, `make` resolves to
 `/Applications/Xcode.app/Contents/Developer/usr/bin/make` and runs a Makefile target, and `python3` and `git` still
 resolve to the host's earlier dirs.
+
+Usage: Implementer 58 input, 14,083 output, 76,056 cache creation, 1,306,855 cache read; Review Session 8 input, 2,578 output, 24,920 cache creation, 114,916 cache read.
+
+**Review Session: Non-critical Findings**
+
+- The Issue says the host's $(xcode-select -p)/usr/bin goes first on PATH; the implementation puts it just before /usr/bin instead. The reason is sound (that dir also holds Xcode's python3/pip3/git, which would hide the host's Homebrew or python.org ones) and it still bypasses every xcrun shim. It is explained in the Issue comments, but the Issue text should be updated or the deviation accepted explicitly.
+- The new Run Workflow test loops over 'native' and 'docker' in one test and rewrites the Issue to 'done' between runs. Two separate tests would read more clearly and fail on their own.
+- The new test checks prompt text (the '## Sandbox' heading and '$TMPDIR'). The Issue asks for this check, but the Spec's Testing Decisions say tests never assert on prompt wording.
+- developerBin() runs `xcode-select -p` on every Agent call. It could be looked up once in createSandcastleAgent.
+
+**Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-18-2026-11-27T10-39-19-507Z.log`).
+
+Usage: Body writer 2 input, 1,226 output, 24,932 cache creation, 11,837 cache read.

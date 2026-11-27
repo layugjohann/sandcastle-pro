@@ -503,7 +503,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
       stage: "implementer",
       prompt: resume
         ? buildResumePrompt("implementer")
-        : buildImplementerPrompt(issue, await readOptional(join(repoDir, "GLOSSARY.md")), config.gate),
+        : buildImplementerPrompt(issue, await readOptional(join(repoDir, "GLOSSARY.md")), config.gate, config.sandbox),
       model,
       effort,
       branch,
@@ -527,6 +527,7 @@ async function runIssue(issue: Issue, options: IssueContext): Promise<IssueResul
           standards: await loadCodingStandards(repoDir),
           gate: config.gate,
           glossary: await readOptional(join(repoDir, "GLOSSARY.md")),
+          sandbox: config.sandbox,
         }),
     model,
     effort,

@@ -1,6 +1,7 @@
 # 18: Tell the Implementer what the sandbox blocks
 
-Status: in-progress
+Status: awaiting-merge
+Pull Request: https://github.com/layugjohann/sandcastle-pro/pull/36
 Blocked by: None
 
 Spec: `.scratch/sandcastle-pro/spec.md`
@@ -57,3 +58,5 @@ Usage: Implementer 58 input, 14,083 output, 76,056 cache creation, 1,306,855 cac
 **Gate passed**: every command exited 0 (log: `.sandcastle/logs/gate-18-2026-11-27T10-39-19-507Z.log`).
 
 Usage: Body writer 2 input, 1,226 output, 24,932 cache creation, 11,837 cache read.
+
+**Pull Request opened**: https://github.com/layugjohann/sandcastle-pro/pull/36
